@@ -1,0 +1,25 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on known vulnerabilities and on unmaintained or yanked crates.
+yanked = "deny"
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

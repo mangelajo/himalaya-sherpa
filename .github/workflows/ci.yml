@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt, clippy, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: make fmt-check
+      - run: make lint
+      - run: make doc
+
+  test:
+    name: test (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # stable, and the minimum supported version (rust-version in Cargo.toml)
+        toolchain: [stable, "1.88"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.toolchain }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: himalaya-${{ hashFiles('Makefile') }}
+      # End-to-end tests run the gate against the pinned himalaya release;
+      # SHERPA_REQUIRE_HIMALAYA makes them fail instead of skipping.
+      - run: make test-e2e
+      - run: make test
+        env:
+          SHERPA_REQUIRE_HIMALAYA: "1"
+      - run: make policy-check
+
+  deny:
+    name: dependencies (advisories, licenses, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

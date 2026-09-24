@@ -193,10 +193,16 @@ filter misses (or wrongly catches) a message, save it as `.eml`, look at it with
 ## Development
 
 ```sh
-cargo test                    # unit tests (including the shipped policy's examples)
-                              # + end-to-end tests against a Maildir account
-HIMALAYA_BIN=/path/to/himalaya cargo test --test gate
+make            # list the tasks
+make check      # formatting, clippy, docs and tests: run before pushing
+make test-e2e   # end-to-end tests against the pinned himalaya release (downloaded, checksum-verified)
+make ci         # everything CI runs, including cargo-deny
 ```
+
+The end-to-end tests drive the gate against a temporary Maildir account. They use
+`HIMALAYA_BIN`, the pinned release in `.cache/` (`make himalaya`), or a `himalaya` on
+`PATH`, and are skipped if none is found (CI sets `SHERPA_REQUIRE_HIMALAYA=1` to fail
+instead). The minimum supported Rust version is 1.88 (`make msrv`).
 
 To try the gate without installing it, run `target/debug/sherpa` with
 `SHERPA_CONFIG=/path/to/sherpa.toml`. The variable is ignored under sudo.
