@@ -74,6 +74,9 @@ enum Cmd {
     Log {
         #[arg(short = 'n', long, default_value_t = 50)]
         lines: usize,
+        /// Only entries with this decision (e.g. suspicious, rejected, withheld, denied).
+        #[arg(long)]
+        decision: Option<String>,
     },
 }
 
@@ -290,9 +293,9 @@ fn run(cli: Cli) -> Result<bool> {
                 PolicyCmd::Install { file, yes } => admin::policy_install(service, &file, yes),
             };
         }
-        Cmd::Log { lines } => {
+        Cmd::Log { lines, decision } => {
             admin::drop_to(service)?;
-            admin::show_log(&load()?, lines)?;
+            admin::show_log(&load()?, lines, decision.as_deref())?;
         }
     }
     Ok(true)

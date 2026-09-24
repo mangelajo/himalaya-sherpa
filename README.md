@@ -159,7 +159,14 @@ sudo sherpa-admin review approve <ID>                # send it (needs a send bac
 sudo sherpa-admin review approve <ID> --via draft    # or put it in Drafts, send it yourself
 sudo sherpa-admin review deny <ID> --reason "wrong recipient"
 sudo sherpa-admin log -n 100            # audit log (metadata only, never contents)
+sudo sherpa-admin log --decision suspicious   # commands the gate refused that reach for
+                                              # settings, forwarding, raw protocols or config
 ```
+
+Commands the gate does not offer are refused and logged with their command words only
+(never values such as addresses or paths). Refused commands that mention forwarding,
+filters, delegates, settings, raw protocols, credentials or configuration are logged as
+`suspicious`: an agent reaching for those is a strong sign of an injected instruction.
 
 ## Policy
 
@@ -177,7 +184,10 @@ See [`etc/sherpa.toml`](etc/sherpa.toml); every option is documented there. In s
 | `mailboxes.readable` / `writable` | optional mailbox allowlists |
 
 The default filters cover one-time codes, verification mails, password resets, magic
-links and security alerts, in English and Spanish.
+links, security alerts, mail-forwarding confirmations (whose code Gmail puts in the
+subject, so they are hidden from listings), and notices that forwarding, filters,
+delegates or send-as addresses changed (readable, but the agent cannot hide them), in
+English and Spanish.
 
 ### Testing policy changes
 

@@ -1151,7 +1151,7 @@ pub fn review_deny(cfg: &Config, id: &str, reason: Option<String>) -> Result<()>
     Ok(())
 }
 
-pub fn show_log(cfg: &Config, lines: usize) -> Result<()> {
+pub fn show_log(cfg: &Config, lines: usize, decision: Option<&str>) -> Result<()> {
     let mut text = String::new();
     match fs::File::open(cfg.audit_log()) {
         Ok(mut f) => {
@@ -1163,7 +1163,14 @@ pub fn show_log(cfg: &Config, lines: usize) -> Result<()> {
         }
         Err(e) => return Err(e.into()),
     }
-    let all: Vec<&str> = text.lines().collect();
+    let all: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            decision.is_none_or(|d| {
+                serde_json::from_str::<serde_json::Value>(l).is_ok_and(|v| v["decision"].as_str() == Some(d))
+            })
+        })
+        .collect();
     for l in &all[all.len().saturating_sub(lines)..] {
         println!("{l}");
     }

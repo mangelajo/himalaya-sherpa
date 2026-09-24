@@ -112,6 +112,38 @@ subject = [
   '(?i)\b(alerta de seguridad|nuevo inicio de sesi[oó]n|nuevo dispositivo|actividad (inusual|sospechosa)|contrase[ñn]a (ha sido )?cambiada)\b',
 ]
 
+# Mail forwarding is the quietest way to take over a mailbox: whoever adds a forwarding
+# address gets a confirmation code sent to this inbox. Gmail puts that code in the
+# subject, so these patterns must match the subject to keep it out of listings.
+[[filter]]
+name = "forwarding-confirmation"
+action = "withhold"
+text = [
+  '(?i)\bforwarding confirmation\b',
+  '^\s*\(#\d{6,}\)',
+  '(?i)\b(confirm|verify|approve)\b.{0,40}\bforwarding\b',
+  '(?i)\brequested to (automatically )?forward (mail|email|messages)\b',
+  '(?i)\bconfirmaci[oó]n de reenv[ií]o\b',
+  '(?i)\b(confirma|verifica|aprueba)\b.{0,40}\breenv[ií]o\b',
+  '(?i)\bha solicitado reenviar\b',
+]
+
+# Notices that forwarding, filters, delegates or send-as addresses changed. They may be
+# the only sign of a takeover, so the agent can read them but never hide them.
+[[filter]]
+name = "account-change-notice"
+action = "protect"
+text = [
+  '(?i)\bforwarding address(es)? (was |were |has been |have been )?(added|removed|changed|verified)\b',
+  '(?i)\b(auto-?forwarding|automatic forwarding)\b.{0,40}\b(on|enabled|turned on|activated|set up)\b',
+  '(?i)\b(mail|email|inbox|message) (filter|rule)s? (was |has been )?(added|created|changed)\b',
+  '(?i)\b(delegate|delegated access)\b.{0,40}\b(added|granted|your (mail|account))\b',
+  '(?i)\b(send mail as|send-as) (address )?(was |has been )?(added|verified)\b',
+  '(?i)\bdirecci[oó]n de reenv[ií]o\b.{0,40}\b(a[ñn]adida|agregada|eliminada|cambiada|verificada)\b',
+  '(?i)\b(se ha a[ñn]adido|se ha agregado)\b.{0,40}\b(reenv[ií]o|filtro|delegad[oa])\b',
+  '(?i)\breenv[ií]o autom[aá]tico\b.{0,40}\b(activado|habilitado)\b',
+]
+
 # Example: mask codes and links in mail from your bank, but let the agent read it.
 # [[filter]]
 # name = "bank"
@@ -265,6 +297,68 @@ name = "Spanish ordinary mail"
 from = "maria@example.es"
 subject = "Reunión del jueves"
 body = "¿Te viene bien a las 10? Te mando la agenda."
+expect = "allow"
+
+[[example]]
+name = "Gmail forwarding confirmation (code in the subject)"
+from = "forwarding-noreply@google.com"
+subject = "(#512371825) Gmail Forwarding Confirmation - Receive Mail from me@gmail.com"
+body = """attacker@evil.example has requested to automatically forward mail to their email address.
+Confirmation code: 512371825
+To allow it, click https://mail-settings.google.com/mail/vf-a1b2c3d4"""
+expect = "withhold"
+secrets = ["512371825", "vf-a1b2c3d4"]
+
+[[example]]
+name = "Spanish forwarding confirmation"
+from = "forwarding-noreply@google.com"
+subject = "(#734001992) Confirmación de reenvío de Gmail - Recibir correo de yo@gmail.com"
+body = "atacante@ejemplo.com ha solicitado reenviar automáticamente el correo. Código de confirmación: 734001992"
+expect = "withhold"
+secrets = ["734001992"]
+
+[[example]]
+name = "confirm forwarding, other providers"
+from = "account-security-noreply@accountprotection.microsoft.com"
+subject = "Confirm your forwarding address"
+body = "Please confirm forwarding to attacker@evil.example: https://account.live.com/fwd?t=Zq81Lm"
+expect = "withhold"
+secrets = ["Zq81Lm"]
+
+[[example]]
+name = "forwarding address added notice stays in place"
+from = "no-reply@accounts.google.com"
+subject = "Forwarding address added to your account"
+body = "A forwarding address attacker@evil.example was added to your Google Account."
+expect = "protect"
+expect-filters = ["account-change-notice"]
+
+[[example]]
+name = "new mail rule notice stays in place"
+from = "no-reply@microsoft.com"
+subject = "An inbox rule was created"
+body = "A new inbox rule has been created in your mailbox: forward all messages to attacker@evil.example."
+expect = "protect"
+
+[[example]]
+name = "Spanish forwarding notice stays in place"
+from = "no-reply@accounts.google.com"
+subject = "Dirección de reenvío añadida"
+body = "Se ha añadido una dirección de reenvío a tu cuenta: atacante@ejemplo.com"
+expect = "protect"
+
+[[example]]
+name = "forwarding an ordinary email is not an account change"
+from = "bob@example.com"
+subject = "Fwd: meeting notes"
+body = "I forwarded you the notes from Thursday; the filter on page 2 needs a look."
+expect = "allow"
+
+[[example]]
+name = "newsletter mentioning filters"
+from = "news@app.example"
+subject = "New in our app: smarter filters"
+body = "You can now create filters and rules for your projects."
 expect = "allow"
 
 [[send-example]]
