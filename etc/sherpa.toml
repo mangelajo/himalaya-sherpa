@@ -1,0 +1,282 @@
+# himalaya-sherpa policy
+#
+# Installed as /etc/himalaya-sherpa/sherpa.toml, owned by root and readable only by
+# the sherpa service user. The agent can never read or change it.
+
+# himalaya binary and configuration used by the gate (not readable by the agent).
+himalaya = "/usr/local/libexec/himalaya-sherpa/himalaya"
+himalaya-config = "/etc/himalaya-sherpa/himalaya.toml"
+
+# Outbox and audit log.
+state-dir = "/var/lib/himalaya-sherpa"
+
+# Attachments are downloaded here (readable by the agent's group).
+attachments-dir = "/var/lib/himalaya-sherpa-attachments"
+
+# Extra environment for himalaya. The environment is otherwise cleared.
+[env]
+# PASSWORD_STORE_DIR = "/var/lib/himalaya-sherpa/.password-store"
+
+[accounts]
+# Accounts the agent may use. Empty: all accounts in the himalaya config.
+allowed = []
+
+[mailboxes]
+# Mailboxes (names or aliases, case-insensitive) the agent may read. Empty: all.
+# Filters look at message content, so they apply in every mailbox, including
+# Gmail's "[Gmail]/All Mail", which holds every message regardless of label.
+readable = []
+# Mailboxes the agent may move, copy or add messages to. Empty: all.
+writable = []
+
+[send]
+# What happens when the agent sends a message:
+#   deny      refuse, and tell the agent
+#   queue     keep it in the outbox until you approve it (`sherpa-admin review`)
+#   draft     append it to the Drafts mailbox; you send it from your mail client
+#   blackhole tell the agent it was sent, but only log it
+mode = "queue"
+drafts-mailbox = "drafts"
+# Recipients (regex on the bare address) that are sent without approval. Every
+# recipient must match. Requires a send backend (SMTP, JMAP...) in himalaya.toml.
+auto-send-to = []
+auto-send-max-per-day = 10
+
+[read]
+# How a withheld message is reported when read by id:
+#   notice     say it is withheld and why (the agent then stops looking)
+#   not-found  behave as if it did not exist
+withheld = "notice"
+hide-withheld-in-listings = true
+
+[search]
+# `body <pattern>` search conditions. A body search that matches a withheld message
+# leaks its contents one guess at a time, so it is disabled by default.
+allow-body = false
+
+[redact]
+# Defaults: URLs, numeric codes (4-10 digits, `123 456`), and mixed letter/digit
+# tokens of 6+ characters. Setting `patterns` replaces the default list.
+# patterns = ['(?i)\b(?:https?|ftp)://\S+', '\b\d{4,10}\b']
+mixed-tokens = true
+replacement = "[REDACTED]"
+
+# Filters
+#
+# Every condition set in a filter must match (AND); within a condition, any of the
+# patterns may match (OR). Conditions:
+#   from, to   regex on bare addresses (`user@domain`)
+#   subject    regex on the subject
+#   body       regex on the body text (and raw HTML, so links in href count)
+#   text       regex on subject or body
+# Actions, from least to most restrictive (the most restrictive match wins):
+#   protect    readable, but cannot be flagged, moved, deleted
+#   redact     readable with codes and links masked; no raw, attachments, reply, forward
+#   withhold   not readable at all
+# `release-after-hours` switches to `release-to` once the message is that old.
+#
+# Envelope listings only know sender, recipients and subject, so a filter with a
+# `body` condition takes effect when the message is read.
+
+[[filter]]
+name = "one-time-code"
+action = "withhold"
+text = [
+  '(?i)\b(verification|security|confirmation|login|log-in|sign[- ]?in|access|authentication|one[- ]time|2fa|two[- ]factor|otp|launch)\s+(code|pin|passcode)\b',
+  '(?i)\bone[- ]time (password|passcode)\b',
+  '(?i)\b\d{4,8}\b.{0,30}\b(is your|es tu|es su)\b.{0,30}\b(code|c[oó]digo)\b',
+  '(?i)\bc[oó]digo\s+(de\s+)?(verificaci[oó]n|seguridad|acceso|confirmaci[oó]n|inicio de sesi[oó]n|un solo uso)\b',
+  '(?i)\b(verify|confirm) (your )?(email|e-mail|device|identity|sign[- ]?in|login)\b',
+  '(?i)\b(verifica|confirma) (tu|su) (correo|email|dispositivo|identidad|cuenta)\b',
+]
+release-after-hours = 48
+release-to = "redact"
+
+[[filter]]
+name = "password-reset"
+action = "withhold"
+text = [
+  '(?i)\b(reset|change|recover|restore|forgot|forgotten)\b.{0,30}\bpassword\b',
+  '(?i)\bpassword\b.{0,20}\b(reset|recovery)\b',
+  '(?i)\b(restablec\w*|recupera\w*|olvid\w*)\b.{0,30}\bcontrase[ñn]a\b',
+  '(?i)\b(magic|sign[- ]?in|login|log-in) link\b',
+  '(?i)\benlace (de|para) (acceso|inicio de sesi[oó]n|iniciar sesi[oó]n)\b',
+  '(?i)\baccount recovery\b|\brecuperaci[oó]n de (la )?cuenta\b',
+]
+release-after-hours = 72
+release-to = "redact"
+
+[[filter]]
+name = "security-alert"
+action = "protect"
+subject = [
+  '(?i)\b(security alert|new (sign-in|sign in|login|device)|unusual (sign-in|activity)|suspicious (activity|sign-in|login))\b',
+  '(?i)\b(password (was |has been )?changed|2-step verification|two-factor authentication (enabled|disabled))\b',
+  '(?i)\b(alerta de seguridad|nuevo inicio de sesi[oó]n|nuevo dispositivo|actividad (inusual|sospechosa)|contrase[ñn]a (ha sido )?cambiada)\b',
+]
+
+# Example: mask codes and links in mail from your bank, but let the agent read it.
+# [[filter]]
+# name = "bank"
+# action = "redact"
+# from = ['@(mybank\.example|paypal\.com)$']
+
+# Examples
+#
+# Sample messages with the outcome this policy must produce. `sherpa-admin policy
+# check` (and `policy edit` / `policy install`) runs them through the same code as
+# the gate and refuses a policy that gets any of them wrong. The gate ignores them.
+#
+#   expect          allow | protect | redact | withhold
+#   expect-filters  optional: exactly these filters must match
+#   secrets         strings the agent must never see, in listings or when reading
+#   age-hours       message age, to test release-after-hours
+#   html = true     the body is HTML
+#   raw = '''...''' a complete message instead of from/to/subject/body
+#
+# When you change a filter, add the message that prompted the change here.
+
+[[example]]
+name = "GitHub device verification"
+from = "noreply@github.com"
+subject = "[GitHub] Please verify your device"
+body = "Verification code: 482913\nIf you did not attempt to sign in, change your password."
+expect = "withhold"
+secrets = ["482913"]
+
+[[example]]
+name = "code in the subject is hidden from listings"
+from = "no-reply@instagram.com"
+subject = "837201 is your Instagram code"
+body = "Someone tried to log in. 837201 is your Instagram code."
+expect = "withhold"
+secrets = ["837201"]
+
+[[example]]
+name = "Spanish verification code"
+from = "no-reply@banco.example"
+subject = "Tu código de verificación"
+body = "Tu código de verificación es 553201. No lo compartas con nadie."
+expect = "withhold"
+secrets = ["553201"]
+
+[[example]]
+name = "old one-time code is released, redacted"
+from = "noreply@github.com"
+subject = "Your login code"
+body = "Your login code is 771200."
+age-hours = 72
+expect = "redact"
+secrets = ["771200"]
+
+[[example]]
+name = "password reset link"
+from = "help@shop.example"
+subject = "Account help"
+body = "We received a request to reset your password: https://shop.example/r?t=Qx81jZ"
+expect = "withhold"
+expect-filters = ["password-reset"]
+secrets = ["Qx81jZ"]
+
+[[example]]
+name = "reset link only in HTML"
+from = "help@shop.example"
+subject = "Your request"
+body = '<p>Hello!</p><p><a href="https://shop.example/r?t=Hh22kP">Reset your password</a></p>'
+html = true
+expect = "withhold"
+secrets = ["Hh22kP"]
+
+[[example]]
+name = "Spanish password reset"
+from = "soporte@tienda.example"
+subject = "Restablecer tu contraseña"
+body = "Para restablecer tu contraseña entra en https://tienda.example/r/Zz91"
+expect = "withhold"
+secrets = ["Zz91"]
+
+[[example]]
+name = "magic sign-in link"
+from = "hello@app.example"
+subject = "Your sign-in link"
+body = "Click to sign in: https://app.example/magic/a1b2c3d4e5"
+expect = "withhold"
+secrets = ["a1b2c3d4e5"]
+
+[[example]]
+name = "forwarded code"
+raw = '''
+From: friend@example.com
+To: me@example.com
+Subject: Fwd: something
+Content-Type: multipart/mixed; boundary=XX
+
+--XX
+Content-Type: text/plain
+
+See below.
+--XX
+Content-Type: message/rfc822
+
+From: no-reply@service.example
+Subject: Your security code
+Content-Type: text/plain
+
+Security code: 660114
+--XX--
+'''
+expect = "withhold"
+secrets = ["660114"]
+
+[[example]]
+name = "security alert stays in place"
+from = "no-reply@accounts.google.com"
+subject = "Security alert"
+body = "New sign-in to your account on Linux. If this wasn't you, secure your account."
+expect = "protect"
+
+[[example]]
+name = "Spanish security alert"
+from = "no-reply@cuenta.example"
+subject = "Nuevo inicio de sesión en tu cuenta"
+body = "Hemos detectado un inicio de sesión desde un dispositivo nuevo."
+expect = "protect"
+
+[[example]]
+name = "ordinary mail"
+from = "alice@example.com"
+subject = "Lunch tomorrow?"
+body = "Are you free for lunch at 1pm? Call me at 555 0100."
+expect = "allow"
+
+[[example]]
+name = "promo code is not a one-time code"
+from = "offers@shop.example"
+subject = "20% off this weekend"
+body = "Use the discount code SAVE20 at checkout."
+expect = "allow"
+
+[[example]]
+name = "order confirmation"
+from = "orders@shop.example"
+subject = "Your order #40213 has shipped"
+body = "Track it at https://shop.example/track/40213"
+expect = "allow"
+
+[[example]]
+name = "Spanish ordinary mail"
+from = "maria@example.es"
+subject = "Reunión del jueves"
+body = "¿Te viene bien a las 10? Te mando la agenda."
+expect = "allow"
+
+[[send-example]]
+name = "mail to anyone needs approval"
+to = ["someone@example.org"]
+expect = "queue"
+
+[[send-example]]
+name = "mixed recipients need approval"
+to = ["someone@example.org"]
+cc = ["colleague@example.com"]
+expect = "queue"

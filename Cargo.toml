@@ -1,0 +1,33 @@
+[package]
+name = "himalaya-sherpa"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Policy gate that lets AI agents use email through himalaya without holding credentials, sending unchecked, or reading one-time codes"
+license = "MIT"
+keywords = ["email", "himalaya", "agent", "sandbox", "security"]
+categories = ["command-line-utilities", "email"]
+
+[[bin]]
+name = "sherpa"
+path = "src/bin/sherpa.rs"
+
+[[bin]]
+name = "sherpa-admin"
+path = "src/bin/sherpa_admin.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.6.7", features = ["derive"] }
+mail-parser = "0.11.9"
+nix = { version = "0.31.3", features = ["user", "fs"] }
+regex = "1.13.1"
+rpassword = "7.5.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+toml_edit = "0.25.15"
+
+[dev-dependencies]
+tempfile = "3.27.0"
