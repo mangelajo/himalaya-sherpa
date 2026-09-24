@@ -26,8 +26,6 @@ pub struct RawConfig {
     pub himalaya_config: PathBuf,
     #[serde(default = "default_state_dir")]
     pub state_dir: PathBuf,
-    #[serde(default = "default_attachments_dir")]
-    pub attachments_dir: PathBuf,
     /// Extra environment variables passed to himalaya (e.g. `PASSWORD_STORE_DIR`).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -150,9 +148,6 @@ fn default_himalaya_config() -> PathBuf {
 }
 fn default_state_dir() -> PathBuf {
     "/var/lib/himalaya-sherpa".into()
-}
-fn default_attachments_dir() -> PathBuf {
-    "/var/lib/himalaya-sherpa-attachments".into()
 }
 
 #[derive(Debug, Default, Deserialize)]

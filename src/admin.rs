@@ -916,7 +916,7 @@ pub enum Via {
 }
 
 fn reviewer() -> String {
-    std::env::var("SUDO_USER").unwrap_or_else(|_| crate::audit::caller())
+    std::env::var("SUDO_USER").unwrap_or_else(|_| crate::audit::local_user())
 }
 
 pub fn review_approve(cfg: &Config, id: &str, via: Via) -> Result<()> {
@@ -953,11 +953,13 @@ pub fn review_approve(cfg: &Config, id: &str, via: Via) -> Result<()> {
     outbox.save(&e)?;
     crate::audit::record(
         cfg,
+        &reviewer(),
         e.account.as_deref(),
         "review approve",
         e.status.as_str(),
-        serde_json::json!({ "outbox-id": id, "reviewer": reviewer() }),
-    );
+        serde_json::json!({ "outbox-id": id }),
+    )
+    .context("cannot write the audit log")?;
     Ok(())
 }
 
@@ -973,11 +975,13 @@ pub fn review_deny(cfg: &Config, id: &str, reason: Option<String>) -> Result<()>
     outbox.save(&e)?;
     crate::audit::record(
         cfg,
+        &reviewer(),
         e.account.as_deref(),
         "review deny",
         "denied",
-        serde_json::json!({ "outbox-id": id, "reviewer": reviewer() }),
-    );
+        serde_json::json!({ "outbox-id": id }),
+    )
+    .context("cannot write the audit log")?;
     println!("Denied {id}.");
     Ok(())
 }
@@ -1307,6 +1311,7 @@ pub fn policy_scan(service_user: &str, req: ScanRequest) -> Result<bool> {
     }
     crate::audit::record(
         &installed,
+        &reviewer(),
         req.options.account.as_deref(),
         "policy scan",
         "scanned",
@@ -1317,7 +1322,8 @@ pub fn policy_scan(service_user: &str, req: ScanRequest) -> Result<bool> {
             "until": req.options.until.map(|d| d.to_string()),
             "candidate": req.policy.as_ref().map(|p| p.display().to_string()),
         }),
-    );
+    )
+    .context("cannot write the audit log")?;
 
     let shown: Vec<&crate::scan::Scanned> = results
         .iter()

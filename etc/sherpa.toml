@@ -10,9 +10,6 @@ himalaya-config = "/etc/himalaya-sherpa/himalaya.toml"
 # Outbox and audit log.
 state-dir = "/var/lib/himalaya-sherpa"
 
-# Attachments are downloaded here (readable by the agent's group).
-attachments-dir = "/var/lib/himalaya-sherpa-attachments"
-
 # Extra environment for himalaya. The environment is otherwise cleared.
 [env]
 # PASSWORD_STORE_DIR = "/var/lib/himalaya-sherpa/.password-store"

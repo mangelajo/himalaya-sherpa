@@ -98,19 +98,18 @@ impl Env {
         let mut policy = EXAMPLE_CONFIG
             .lines()
             .filter(|l| {
-                !["himalaya ", "himalaya-config ", "state-dir ", "attachments-dir "]
+                !["himalaya ", "himalaya-config ", "state-dir "]
                     .iter()
                     .any(|k| l.starts_with(k))
             })
             .collect::<Vec<_>>()
             .join("\n");
         policy = format!(
-            "himalaya = \"{}\"\nhimalaya-config = \"{}\"\nstate-dir = \"{}\"\nattachments-dir = \"{}\"\n{policy}\n\
+            "himalaya = \"{}\"\nhimalaya-config = \"{}\"\nstate-dir = \"{}\"\n{policy}\n\
              [[filter]]\nname = \"bank\"\naction = \"redact\"\nfrom = '@bank\\.example$'\n",
             himalaya.display(),
             root.join("himalaya.toml").display(),
             root.join("state").display(),
-            root.join("att").display(),
         );
         for (from, to) in extra_policy.lines().filter_map(|l| l.split_once(" => ")) {
             assert!(policy.contains(from), "policy has no {from:?}");
@@ -255,11 +254,26 @@ fn body_search_and_unknown_options_are_rejected() {
         &["--log-level", "trace", "envelope", "list"],
         &["imap", "list"],
         &["smtp", "send"],
-        &["message", "compose", "--attach", "/etc/passwd", "-t", "a@b.c"],
         &["message", "send", "--", "/etc/passwd"],
     ] {
         assert_eq!(env.run(args, None).status.code(), Some(2), "{args:?} was accepted");
     }
+}
+
+#[test]
+fn attach_needs_the_file_from_the_client() {
+    let env = env_or_skip!("");
+    let err = env.denied(&[
+        "message",
+        "compose",
+        "--attach",
+        "/etc/passwd",
+        "-t",
+        "a@b.c",
+        "--body",
+        "x",
+    ]);
+    assert!(err.contains("was not received"), "{err}");
 }
 
 #[test]

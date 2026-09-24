@@ -25,6 +25,8 @@ pub struct Cli {
     pub command: Cmd,
 }
 
+// Parsed once per request, so the size difference between variants does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
     /// Manage mailboxes.
@@ -170,6 +172,9 @@ pub struct ComposeArgs {
     /// Signature appended after the body.
     #[arg(long)]
     pub signature: Option<String>,
+    /// Attach a file. Repeat for several.
+    #[arg(long)]
+    pub attach: Vec<String>,
     /// Append a copy of the composed message to this mailbox.
     #[arg(long)]
     pub save: Option<String>,
@@ -296,6 +301,9 @@ pub enum AttachmentCmd {
         id: String,
         /// Attachment identifier(s) (default: all).
         attachment_ids: Vec<String>,
+        /// Directory to save them in (default: the current directory).
+        #[arg(short = 'd', long)]
+        dir: Option<String>,
         #[arg(short = 'm', long)]
         mailbox: Option<String>,
     },

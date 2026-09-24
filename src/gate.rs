@@ -1,10 +1,14 @@
 //! The policy gate: validates each agent command, classifies the messages it
 //! touches, and runs himalaya on the agent's behalf.
 
-use std::io::{IsTerminal, Read, Write};
-use std::os::unix::fs::DirBuilderExt;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use clap::Parser;
 use mail_parser::MessageParser;
 use regex::Regex;
 use serde_json::{Value, json};
@@ -35,20 +39,178 @@ fn deny<T>(msg: impl Into<String>) -> Result<T> {
 
 const DONT_WORK_AROUND: &str = "Do not retry or try to achieve this by other means.";
 
-pub struct Gate {
+/// Largest total size of attachments returned by one `attachment download`.
+pub const MAX_DOWNLOAD_BYTES: usize = 48 << 20;
+
+/// Who is calling the gate.
+#[derive(Debug, Clone, Default)]
+pub struct Caller {
+    /// Agent name, from the service configuration.
+    pub name: String,
+    /// Peer credentials of the connection, as seen by the kernel.
+    pub uid: Option<u32>,
+    pub pid: Option<i32>,
+}
+
+/// A file handed back to the client (downloaded attachments). The client writes it,
+/// with its own privileges, under `dir` (a path of its choosing) or its current directory.
+#[derive(Debug, Clone)]
+pub struct OutFile {
+    pub dir: Option<String>,
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+/// Result of one gate invocation.
+#[derive(Debug, Default)]
+pub struct Response {
+    pub exit: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub files: Vec<OutFile>,
+    /// Whether the client should print where it saved `files`.
+    pub announce_files: bool,
+}
+
+/// Supplies the client's standard input when a command needs it: `None` when the
+/// client's stdin is a terminal. Called at most once, and only by commands that
+/// read stdin, so a client with an idle open stdin never blocks other commands.
+pub type StdinSource<'a> = dyn Fn() -> Result<Option<Vec<u8>>> + 'a;
+
+/// One command from the agent.
+pub struct Request<'a> {
+    /// Arguments, without the program name.
+    pub argv: Vec<String>,
+    pub caller: Caller,
+    /// Contents of the files named by `--attach`, read by the client, keyed by the path given.
+    pub files: BTreeMap<String, Vec<u8>>,
+    pub stdin: &'a StdinSource<'a>,
+}
+
+/// Parse and run one agent command. Never panics on bad input; every failure becomes
+/// an error response.
+pub fn handle(cfg: Config, req: Request<'_>) -> Response {
+    let argv = std::iter::once("himalaya".to_string()).chain(req.argv);
+    let cli = match Cli::try_parse_from(argv) {
+        Ok(cli) => cli,
+        Err(e) => {
+            let text = e.render().to_string().into_bytes();
+            let mut resp = Response {
+                exit: e.exit_code(),
+                ..Default::default()
+            };
+            if e.use_stderr() {
+                resp.stderr = text;
+            } else {
+                resp.stdout = text;
+            }
+            return resp;
+        }
+    };
+    let json = cli.json;
+    let gate = Gate::new(cfg, cli.account, json, req.caller, req.stdin, req.files);
+    let result = gate.run(cli.command);
+    if gate.audit_failed.get() {
+        return Response {
+            exit: 1,
+            stderr: b"Error: the email gate cannot write its audit log, so it returns nothing. Tell the user.\n"
+                .to_vec(),
+            ..Default::default()
+        };
+    }
+    let mut resp = Response {
+        stdout: gate.out.take(),
+        files: gate.files.take(),
+        announce_files: gate.announce_files.get(),
+        ..Default::default()
+    };
+    match result {
+        Ok(code) => resp.exit = code,
+        Err(e) => {
+            let (code, message) = if let Some(d) = e.downcast_ref::<Denied>() {
+                (3, format!("Denied by policy: {d}"))
+            } else if let Some(f) = e.downcast_ref::<himalaya::Failed>() {
+                let m = f.message.strip_prefix("Error: ").unwrap_or(&f.message);
+                (f.code.clamp(1, 255), format!("Error: {m}"))
+            } else {
+                (1, format!("Error: {e:#}"))
+            };
+            resp.exit = code;
+            resp.files.clear();
+            if json {
+                resp.stdout
+                    .extend(format!("{}\n", json!({ "error": message })).into_bytes());
+            } else {
+                resp.stderr.extend(format!("{message}\n").into_bytes());
+            }
+        }
+    }
+    resp
+}
+
+/// A private directory under the state directory, removed when dropped.
+fn private_tempdir(cfg: &Config, prefix: &str) -> Result<tempfile::TempDir> {
+    let base = cfg.raw.state_dir.join("tmp");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&base)
+        .with_context(|| format!("cannot create {}", base.display()))?;
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in(&base)
+        .with_context(|| format!("cannot create a directory in {}", base.display()))
+}
+
+/// The last path component, made safe to use as a file name.
+pub fn safe_file_name(path: &str) -> String {
+    let name = Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name: String = name.chars().filter(|c| !c.is_control() && *c != '/').collect();
+    if name.is_empty() || name == "." || name == ".." {
+        "attachment".into()
+    } else {
+        name
+    }
+}
+
+pub struct Gate<'a> {
     pub cfg: Config,
     pub account: Option<String>,
     pub json: bool,
     pub now: i64,
+    caller: Caller,
+    stdin: &'a StdinSource<'a>,
+    in_files: BTreeMap<String, Vec<u8>>,
+    out: RefCell<Vec<u8>>,
+    files: RefCell<Vec<OutFile>>,
+    announce_files: Cell<bool>,
+    audit_failed: Cell<bool>,
 }
 
-impl Gate {
-    pub fn new(cfg: Config, account: Option<String>, json: bool) -> Self {
+impl<'a> Gate<'a> {
+    pub fn new(
+        cfg: Config,
+        account: Option<String>,
+        json: bool,
+        caller: Caller,
+        stdin: &'a StdinSource<'a>,
+        in_files: BTreeMap<String, Vec<u8>>,
+    ) -> Self {
         Self {
             cfg,
             account,
             json,
             now: chrono::Utc::now().timestamp(),
+            caller,
+            stdin,
+            in_files,
+            out: RefCell::default(),
+            files: RefCell::default(),
+            announce_files: Cell::new(false),
+            audit_failed: Cell::new(false),
         }
     }
 
@@ -63,12 +225,33 @@ impl Gate {
         Outbox::new(self.cfg.outbox_dir())
     }
 
+    /// Record a decision. If the audit log cannot be written, the whole response is
+    /// replaced by an error (see [`handle`]): the gate fails closed.
     fn audit(&self, command: &str, decision: &str, extra: Value) {
-        audit::record(&self.cfg, self.account.as_deref(), command, decision, extra);
+        let mut extra = extra;
+        if let Some(obj) = extra.as_object_mut() {
+            if let Some(uid) = self.caller.uid {
+                obj.insert("peer-uid".into(), uid.into());
+            }
+            if let Some(pid) = self.caller.pid {
+                obj.insert("peer-pid".into(), pid.into());
+            }
+        }
+        let result = audit::record(
+            &self.cfg,
+            &self.caller.name,
+            self.account.as_deref(),
+            command,
+            decision,
+            extra,
+        );
+        if result.is_err() {
+            self.audit_failed.set(true);
+        }
     }
 
     fn print(&self, text: &str) -> Result<i32> {
-        let mut out = std::io::stdout().lock();
+        let mut out = self.out.borrow_mut();
         out.write_all(text.as_bytes())?;
         if !text.ends_with('\n') {
             out.write_all(b"\n")?;
@@ -88,7 +271,7 @@ impl Gate {
     }
 
     fn passthrough(&self, out: &[u8]) -> Result<i32> {
-        std::io::stdout().lock().write_all(out)?;
+        self.out.borrow_mut().write_all(out)?;
         Ok(0)
     }
 
@@ -179,17 +362,40 @@ impl Gate {
         Ok(())
     }
 
-    fn read_stdin(what: &str) -> Result<Vec<u8>> {
-        let mut stdin = std::io::stdin();
-        if stdin.is_terminal() {
-            return deny(format!("{what}: pipe the raw RFC 5322 message on standard input"));
+    fn read_stdin(&self, what: &str) -> Result<Vec<u8>> {
+        match (self.stdin)()? {
+            None => deny(format!("{what}: pipe the raw RFC 5322 message on standard input")),
+            Some(buf) if buf.is_empty() => deny(format!("{what}: no message on standard input")),
+            Some(buf) => Ok(buf),
         }
-        let mut buf = Vec::new();
-        stdin.read_to_end(&mut buf)?;
-        if buf.is_empty() {
-            return deny(format!("{what}: no message on standard input"));
+    }
+
+    /// Write the files the client sent for `--attach` into a private directory, keeping
+    /// their names (himalaya names attachments after their files).
+    fn stage_attachments(&self, paths: &[String]) -> Result<Option<(tempfile::TempDir, Vec<PathBuf>)>> {
+        if paths.is_empty() {
+            return Ok(None);
         }
-        Ok(buf)
+        let dir = private_tempdir(&self.cfg, "attach-")?;
+        let mut staged = Vec::new();
+        for (i, path) in paths.iter().enumerate() {
+            let Some(data) = self.in_files.get(path) else {
+                return deny(format!(
+                    "attachment {path:?} was not received; the himalaya client sends the files named by --attach"
+                ));
+            };
+            let sub = dir.path().join(i.to_string());
+            std::fs::DirBuilder::new().mode(0o700).create(&sub)?;
+            let file = sub.join(safe_file_name(path));
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&file)?;
+            f.write_all(data)?;
+            staged.push(file);
+        }
+        Ok(Some((dir, staged)))
     }
 
     // ----- dispatch -----------------------------------------------------------
@@ -383,11 +589,11 @@ impl Gate {
         match cmd {
             MessageCmd::Read { id, mailbox, raw, seen } => self.read(&id, mailbox.as_deref(), raw, seen),
             MessageCmd::Send { save } => {
-                let raw = Self::read_stdin("message send")?;
+                let raw = self.read_stdin("message send")?;
                 self.submit(raw, save)
             }
             MessageCmd::Add { mailbox, flags, send } => {
-                let raw = Self::read_stdin("message add")?;
+                let raw = self.read_stdin("message add")?;
                 if send {
                     return self.submit(raw, Some(mailbox));
                 }
@@ -524,17 +730,18 @@ impl Gate {
                 args.extend(["--quote-headline".into(), h.clone()]);
             }
         }
+        let staged = self.stage_attachments(&c.attach)?;
+        if let Some((_, files)) = &staged {
+            for f in files {
+                args.extend(["--attach".into(), f.display().to_string()]);
+            }
+        }
         if let Some(id) = id {
             args.push(id.into());
         }
-        let stdin = if c.body.is_none() && !std::io::stdin().is_terminal() {
-            let mut buf = Vec::new();
-            std::io::stdin().read_to_end(&mut buf)?;
-            Some(buf)
-        } else {
-            None
-        };
+        let stdin = if c.body.is_none() { (self.stdin)()? } else { None };
         let mime = self.him().run_ok(false, &args, Some(stdin.as_deref().unwrap_or(b"")))?;
+        drop(staged);
 
         if c.send {
             return self.submit(mime, c.save.clone());
@@ -594,7 +801,7 @@ impl Gate {
             id: id.clone(),
             created: outbox::now_rfc3339(),
             created_ts: self.now,
-            caller: audit::caller(),
+            caller: self.caller.name.clone(),
             account: self.account.clone(),
             from: list(msg.from()),
             to: to.clone(),
@@ -743,6 +950,7 @@ impl Gate {
             ));
         }
         let mut args: Vec<String> = vec!["attachment".into()];
+        let mut download: Option<tempfile::TempDir> = None;
         match &cmd {
             AttachmentCmd::List { inline, .. } => {
                 args.push("list".into());
@@ -751,29 +959,9 @@ impl Gate {
                 }
             }
             AttachmentCmd::Download { .. } => {
-                let account = self.account.clone().unwrap_or_else(|| "default".into());
-                let safe = |s: &str| {
-                    s.chars()
-                        .map(|c| {
-                            if c.is_ascii_alphanumeric() || "._-".contains(c) {
-                                c
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect::<String>()
-                };
-                let dir = self.cfg.raw.attachments_dir.join(safe(&account)).join(format!(
-                    "{}-{}",
-                    chrono::Utc::now().format("%Y%m%d-%H%M%S"),
-                    safe(&id)
-                ));
-                std::fs::DirBuilder::new()
-                    .recursive(true)
-                    .mode(0o750)
-                    .create(&dir)
-                    .with_context(|| format!("cannot create {}", dir.display()))?;
-                args.extend(["download".into(), "--dir".into(), dir.display().to_string()]);
+                let dir = private_tempdir(&self.cfg, "download-")?;
+                args.extend(["download".into(), "--dir".into(), dir.path().display().to_string()]);
+                download = Some(dir);
             }
         }
         if let Some(m) = &mailbox {
@@ -787,12 +975,50 @@ impl Gate {
             args.extend(attachment_ids.iter().cloned());
         }
         let out = self.him().run_ok(self.json, &args, None)?;
+        let (Some(tmp), AttachmentCmd::Download { dir, .. }) = (&download, &cmd) else {
+            self.audit("attachment list", "allowed", json!({ "id": id, "mailbox": mailbox }));
+            return self.passthrough(&out);
+        };
+        // Hand the files to the client instead of himalaya's listing of private paths.
+        let mut files = Vec::new();
+        let mut total = 0;
+        let mut entries: Vec<_> = std::fs::read_dir(tmp.path())?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let data = std::fs::read(entry.path())?;
+            total += data.len();
+            if total > MAX_DOWNLOAD_BYTES {
+                return deny(format!(
+                    "the attachments of message {id} are larger than {} MiB; ask the user to save them",
+                    MAX_DOWNLOAD_BYTES >> 20
+                ));
+            }
+            files.push(OutFile {
+                dir: dir.clone(),
+                name: safe_file_name(&entry.file_name().to_string_lossy()),
+                data,
+            });
+        }
         self.audit(
-            &format!("attachment {}", args[1]),
+            "attachment download",
             "allowed",
-            json!({ "id": id, "mailbox": mailbox }),
+            json!({ "id": id, "mailbox": mailbox, "files": files.len(), "bytes": total }),
         );
-        self.passthrough(&out)
+        if self.json {
+            let list: Vec<Value> = files
+                .iter()
+                .map(|f| json!({ "name": f.name, "size": f.data.len() }))
+                .collect();
+            self.print(&json!({ "attachments": list }).to_string())?;
+        } else if files.is_empty() {
+            self.print("No attachments downloaded.")?;
+        }
+        self.announce_files.set(!self.json);
+        self.files.borrow_mut().extend(files);
+        Ok(0)
     }
 
     // ----- outbox, policy -----------------------------------------------------
@@ -909,10 +1135,7 @@ impl Gate {
         if !raw.mailboxes.readable.is_empty() {
             text.push_str(&format!("Readable mailboxes: {}\n", raw.mailboxes.readable.join(", ")));
         }
-        text.push_str(&format!(
-            "\nAttachments are downloaded under {}.\n",
-            raw.attachments_dir.display()
-        ));
+        text.push_str("\nAttachments you download are saved in your current directory (or --dir).\n");
         text.push_str(&format!("\n{DONT_WORK_AROUND_POLICY}\n"));
         self.print(&text)
     }
