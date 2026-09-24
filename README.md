@@ -280,4 +280,4 @@ SHERPA_SOCKET=/tmp/sherpa.sock target/debug/sherpa envelope list
 
 ## License
 
-MIT
+[Apache-2.0](LICENSE)
