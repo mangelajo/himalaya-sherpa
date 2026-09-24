@@ -154,7 +154,7 @@ impl Env {
     }
 
     fn client(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sherpa-client"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sherpa"));
         cmd.args(args)
             .env("SHERPA_SOCKET", self.dir.path().join("agent.sock"))
             .current_dir(self.dir.path());

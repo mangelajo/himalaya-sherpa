@@ -45,9 +45,10 @@ enum Cmd {
         /// Fill secrets by running the imported password commands as the agent user.
         #[arg(long)]
         import_secrets: bool,
-        /// Also install the agent command at this path (e.g. the agent's ~/.local/bin/himalaya).
+        /// Also make the client available at this path, as a symlink created by the agent
+        /// user (e.g. the agent's ~/.local/bin/himalaya). Repeatable.
         #[arg(long)]
-        shim: Vec<PathBuf>,
+        link: Vec<PathBuf>,
         /// Print what would be done without changing anything.
         #[arg(long)]
         dry_run: bool,
@@ -183,7 +184,7 @@ fn run(cli: Cli) -> Result<bool> {
             himalaya,
             import_config,
             import_secrets,
-            shim,
+            link,
             dry_run,
             allow_untrusted,
         } => {
@@ -193,7 +194,7 @@ fn run(cli: Cli) -> Result<bool> {
                 himalaya,
                 import_config,
                 import_secrets,
-                shims: shim,
+                links: link,
                 dry_run,
                 allow_untrusted,
             })?;

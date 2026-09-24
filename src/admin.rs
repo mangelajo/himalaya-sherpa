@@ -21,9 +21,11 @@ pub struct Layout {
     pub etc: PathBuf,
     pub libexec: PathBuf,
     pub state: PathBuf,
-    pub attachments: PathBuf,
-    pub sudoers: PathBuf,
-    pub bin: PathBuf,
+    /// Directory of the agents' sockets.
+    pub run: PathBuf,
+    pub units: PathBuf,
+    /// The client the agent runs.
+    pub client: PathBuf,
     pub admin_bin: PathBuf,
 }
 
@@ -33,9 +35,9 @@ impl Default for Layout {
             etc: "/etc/himalaya-sherpa".into(),
             libexec: "/usr/local/libexec/himalaya-sherpa".into(),
             state: "/var/lib/himalaya-sherpa".into(),
-            attachments: "/var/lib/himalaya-sherpa-attachments".into(),
-            sudoers: "/etc/sudoers.d/himalaya-sherpa".into(),
-            bin: "/usr/local/bin/sherpa".into(),
+            run: crate::client::SOCKET_DIR.into(),
+            units: "/etc/systemd/system".into(),
+            client: "/usr/local/bin/sherpa".into(),
             admin_bin: "/usr/local/sbin/sherpa-admin".into(),
         }
     }
@@ -52,10 +54,20 @@ impl Layout {
         self.etc.join("secrets")
     }
     pub fn gate(&self) -> PathBuf {
-        self.libexec.join("sherpa")
+        self.libexec.join("sherpa-gate")
     }
     pub fn himalaya(&self) -> PathBuf {
         self.libexec.join("himalaya")
+    }
+    /// The agent's socket; the client finds it by the agent's user name.
+    pub fn socket(&self, agent: &str) -> PathBuf {
+        self.run.join(format!("{agent}.sock"))
+    }
+    pub fn socket_unit(agent: &str) -> String {
+        format!("himalaya-sherpa-{agent}.socket")
+    }
+    pub fn service_unit(agent: &str) -> String {
+        format!("himalaya-sherpa-{agent}@.service")
     }
 }
 
@@ -237,7 +249,8 @@ pub struct SetupOptions {
     pub himalaya: Option<PathBuf>,
     pub import_config: Option<PathBuf>,
     pub import_secrets: bool,
-    pub shims: Vec<PathBuf>,
+    /// Also make the client available at these paths (symlinks, created as the agent).
+    pub links: Vec<PathBuf>,
     pub dry_run: bool,
     /// Accept binaries and configuration the agent could have modified.
     pub allow_untrusted: bool,
@@ -252,30 +265,107 @@ fn find_himalaya(agent: &User) -> Option<PathBuf> {
         .map(|p| std::env::split_paths(&p).map(|d| d.join("himalaya")).collect())
         .unwrap_or_default();
     candidates.push(agent.dir.join(".local/bin/himalaya"));
-    candidates.into_iter().find(|p| p.is_file() && !is_shim(p))
+    candidates.into_iter().find(|p| p.is_file() && !is_client(p))
 }
 
-fn is_shim(path: &Path) -> bool {
-    fs::read(path)
-        .map(|d| d.starts_with(b"#!/bin/sh\n# himalaya-sherpa"))
+/// Whether `path` is (a link to) the sherpa client rather than a real himalaya.
+fn is_client(path: &Path) -> bool {
+    fs::canonicalize(path)
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("sherpa")))
         .unwrap_or(false)
 }
 
-fn shim_script(layout: &Layout, service_user: &str) -> String {
+/// Agent names become socket and unit names.
+fn valid_agent_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c))
+}
+
+/// The socket unit: systemd owns the socket and starts one gate process per connection.
+pub fn socket_unit(layout: &Layout, agent: &User, agent_group: &str, service: &str) -> String {
     format!(
-        "#!/bin/sh\n# himalaya-sherpa: email access goes through the policy gate.\n\
-         exec sudo -n -u {service_user} {} \"$@\"\n",
-        layout.gate().display()
+        "# Installed by himalaya-sherpa: the email gate socket for agent `{name}`.\n\
+         [Unit]\n\
+         Description=himalaya-sherpa email gate socket (agent {name})\n\
+         \n\
+         [Socket]\n\
+         ListenStream={socket}\n\
+         Accept=yes\n\
+         SocketUser={service}\n\
+         SocketGroup={agent_group}\n\
+         SocketMode=0660\n\
+         DirectoryMode=0755\n\
+         MaxConnections=8\n\
+         \n\
+         [Install]\n\
+         WantedBy=sockets.target\n",
+        name = agent.name,
+        socket = layout.socket(&agent.name).display(),
     )
 }
 
-fn sudoers_rule(layout: &Layout, agent: &str, service: &str) -> String {
+/// The per-connection service: a fresh, sandboxed gate process for every request.
+pub fn service_unit(layout: &Layout, agent: &User, service: &str) -> String {
     format!(
-        "# Installed by himalaya-sherpa. The agent user may run only the gate, and only as\n\
-         # the service user; the environment is reset by sudo.\n\
-         {agent} ALL=({service}) NOPASSWD: {}\n",
-        layout.gate().display()
+        "# Installed by himalaya-sherpa: the email gate for agent `{name}`, one process per connection.\n\
+         [Unit]\n\
+         Description=himalaya-sherpa email gate (agent {name})\n\
+         \n\
+         [Service]\n\
+         ExecStart={gate} serve --stdio --agent {name} --allow-uid {uid}\n\
+         StandardInput=socket\n\
+         StandardOutput=journal\n\
+         StandardError=journal\n\
+         User={service}\n\
+         Group={service}\n\
+         Environment=SHERPA_CONFIG={config}\n\
+         UMask=0077\n\
+         RuntimeMaxSec=600\n\
+         \n\
+         # Sandboxing: the gate needs its state directory, its configuration (read-only)\n\
+         # and the network to reach the mail servers.\n\
+         NoNewPrivileges=yes\n\
+         ProtectSystem=strict\n\
+         ReadWritePaths={state}\n\
+         ProtectHome=yes\n\
+         PrivateTmp=yes\n\
+         PrivateDevices=yes\n\
+         ProtectKernelTunables=yes\n\
+         ProtectKernelModules=yes\n\
+         ProtectKernelLogs=yes\n\
+         ProtectControlGroups=yes\n\
+         ProtectClock=yes\n\
+         ProtectHostname=yes\n\
+         ProtectProc=invisible\n\
+         RestrictNamespaces=yes\n\
+         RestrictRealtime=yes\n\
+         RestrictSUIDSGID=yes\n\
+         LockPersonality=yes\n\
+         MemoryDenyWriteExecute=yes\n\
+         RemoveIPC=yes\n\
+         CapabilityBoundingSet=\n\
+         AmbientCapabilities=\n\
+         SystemCallArchitectures=native\n\
+         SystemCallFilter=@system-service\n\
+         SystemCallFilter=~@privileged\n\
+         RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n\
+         # To limit the network to your mail servers (and DNS), add for example:\n\
+         # IPAddressDeny=any\n\
+         # IPAddressAllow=<mail server addresses> <DNS resolver>\n",
+        name = agent.name,
+        uid = agent.uid,
+        gate = layout.gate().display(),
+        config = layout.config().display(),
+        state = layout.state.display(),
     )
+}
+
+fn has_systemd() -> bool {
+    Path::new("/run/systemd/system").is_dir()
 }
 
 /// Why `path` cannot be trusted as coming from outside the agent's control: it, or a
@@ -383,6 +473,14 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
     if opts.service_user == opts.agent_user {
         bail!("the service user must differ from the agent user");
     }
+    if !valid_agent_name(&agent.name) {
+        bail!(
+            "agent user name {:?} cannot be used for socket and unit names (use a-z, 0-9, _ and -)",
+            agent.name
+        );
+    }
+    let agent_group =
+        Group::from_gid(agent.gid)?.with_context(|| format!("the primary group of {} does not exist", agent.name))?;
 
     println!(
         "Setting up himalaya-sherpa (agent: {}, service user: {})",
@@ -395,13 +493,16 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
         .or_else(|| find_himalaya(&agent))
         .context("cannot find the himalaya binary; pass --himalaya <PATH>")?;
     let me = std::env::current_exe()?;
-    let gate = me.with_file_name("sherpa");
-    if !gate.is_file() {
-        bail!("cannot find the sherpa binary next to {}", me.display());
+    let gate = me.with_file_name("sherpa-gate");
+    let client = me.with_file_name("sherpa");
+    for bin in [&gate, &client] {
+        if !bin.is_file() {
+            bail!("cannot find {} next to {}", bin.display(), me.display());
+        }
     }
     // The gate runs with the credentials: its binaries must not come from anywhere
     // the agent could have tampered with.
-    for bin in [&himalaya, &gate] {
+    for bin in [&himalaya, &gate, &me] {
         if let Some(why) = untrusted_reason(bin, &agent) {
             if !opts.allow_untrusted {
                 bail!(
@@ -462,12 +563,13 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
     steps.mkdir(&layout.etc, root, sg, 0o750)?;
     steps.mkdir(&layout.secrets(), root, sg, 0o750)?;
     steps.mkdir(&layout.state, service.uid, sg, 0o700)?;
-    steps.mkdir(&layout.attachments, service.uid, agent.gid, 0o2750)?;
-    steps.mkdir(&layout.libexec, root, root_g, 0o755)?;
+    steps.mkdir(&layout.libexec, root, sg, 0o750)?;
 
-    // 3. Binaries: the real himalaya is only executable by the service user.
+    // 3. Binaries. The gate and the real himalaya are only usable by the service user;
+    //    the client is for everyone (it holds nothing).
     steps.copy(&himalaya, &layout.himalaya(), root, sg, 0o750)?;
-    steps.copy(&gate, &layout.gate(), root, root_g, 0o755)?;
+    steps.copy(&gate, &layout.gate(), root, sg, 0o750)?;
+    steps.copy(&client, &layout.client, root, root_g, 0o755)?;
     if me != layout.admin_bin {
         steps.copy(&me, &layout.admin_bin, root, root_g, 0o755)?;
     }
@@ -552,48 +654,56 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
         missing.push(p.secret.clone());
     }
 
-    // 7. sudo rule, validated before it is installed.
-    let rule = sudoers_rule(&layout, &agent.name, &service.name);
-    if opts.dry_run {
-        steps.say(format!(
-            "write {} (0440, validated with visudo):\n{rule}",
-            layout.sudoers.display()
-        ));
+    // 7. The agent's socket, activated by systemd.
+    let socket_name = Layout::socket_unit(&agent.name);
+    let systemd = has_systemd();
+    if systemd || opts.dry_run {
+        steps.write(
+            &layout.units.join(&socket_name),
+            socket_unit(&layout, &agent, &agent_group.name, &service.name).as_bytes(),
+            root,
+            root_g,
+            0o644,
+        )?;
+        steps.write(
+            &layout.units.join(Layout::service_unit(&agent.name)),
+            service_unit(&layout, &agent, &service.name).as_bytes(),
+            root,
+            root_g,
+            0o644,
+        )?;
+        steps.run(Command::new("systemctl").arg("daemon-reload"))?;
+        steps.run(Command::new("systemctl").args(["enable", "--now", &socket_name]))?;
     } else {
-        let tmp = std::env::temp_dir().join(format!("himalaya-sherpa-sudoers.{}", std::process::id()));
-        fs::write(&tmp, &rule)?;
-        let ok = Command::new("visudo")
-            .args(["-cqf"])
-            .arg(&tmp)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        let _ = fs::remove_file(&tmp);
-        if !ok {
-            bail!("visudo rejected the generated sudoers rule:\n{rule}");
-        }
-        steps.write(&layout.sudoers, rule.as_bytes(), root, root_g, 0o440)?;
+        println!(
+            "  ! systemd is not running; start the gate yourself, as {}:\n      {} serve --agent {} --socket {} --allow-uid {}",
+            service.name,
+            layout.gate().display(),
+            agent.name,
+            layout.socket(&agent.name).display(),
+            agent.uid
+        );
     }
 
-    // 8. Command for the agent.
-    let shim = shim_script(&layout, &service.name);
-    steps.write(&layout.bin, shim.as_bytes(), root, root_g, 0o755)?;
-    for path in &opts.shims {
-        // A shim in the agent's own directories gives no protection by being root-owned
-        // (the agent can replace it), and writing there as root invites symlink races,
-        // so it is written with the agent's privileges.
-        let script = "umask 022; t=\"$1.sherpa.$$\"; cat > \"$t\" && chmod 755 \"$t\" && mv -f \"$t\" \"$1\"";
-        let mut cmd = Command::new("runuser");
-        cmd.args(["-u", &agent.name, "--", "sh", "-c", script, "sh"]).arg(path);
-        steps.say(format!("write {} as {} (0755)", path.display(), agent.name));
+    // 8. Extra names for the client in the agent's own directories (e.g. its
+    //    ~/.local/bin/himalaya). Created with the agent's privileges: they live in the
+    //    agent's space, and writing there as root would invite symlink races.
+    for path in &opts.links {
+        steps.say(format!(
+            "link {} -> {} (as {})",
+            path.display(),
+            layout.client.display(),
+            agent.name
+        ));
         if !opts.dry_run {
-            let mut child = cmd
-                .stdin(std::process::Stdio::piped())
-                .spawn()
+            let status = Command::new("runuser")
+                .args(["-u", &agent.name, "--", "ln", "-sfn"])
+                .arg(&layout.client)
+                .arg(path)
+                .status()
                 .context("cannot run runuser")?;
-            child.stdin.take().unwrap().write_all(shim.as_bytes())?;
-            if !child.wait()?.success() {
-                bail!("cannot write {}", path.display());
+            if !status.success() {
+                bail!("cannot create {}", path.display());
             }
         }
     }
@@ -610,10 +720,7 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
         layout.admin_bin.display(),
         agent.name
     );
-    println!(
-        "  * as {}, run `sherpa envelope list` (or the shim) to try it",
-        agent.name
-    );
+    println!("  * as {}, run `sherpa policy` to try it", agent.name);
     println!("  * review the policy in {}", layout.config().display());
     if let Some(src) = &import {
         println!(
@@ -684,6 +791,11 @@ fn check_mode(r: &mut Report, path: &Path, uid: Uid, gid: Option<Gid>, max_mode:
     }
 }
 
+fn systemctl(args: &[&str]) -> Option<String> {
+    let out = Command::new("systemctl").args(args).output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
     require_root()?;
     let layout = Layout::default();
@@ -726,10 +838,59 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
             check_mode(&mut r, &e.path(), root, Some(service.gid), 0o640);
         }
     }
+    check_mode(&mut r, &layout.libexec, root, Some(service.gid), 0o750);
     check_mode(&mut r, &layout.himalaya(), root, Some(service.gid), 0o750);
-    check_mode(&mut r, &layout.gate(), root, None, 0o755);
+    check_mode(&mut r, &layout.gate(), root, Some(service.gid), 0o750);
+    check_mode(&mut r, &layout.client, root, None, 0o755);
     check_mode(&mut r, &layout.state, service.uid, None, 0o700);
-    check_mode(&mut r, &layout.sudoers, root, None, 0o440);
+
+    // The socket and its units.
+    let socket_unit = Layout::socket_unit(&agent.name);
+    if has_systemd() {
+        for unit in [socket_unit.clone(), Layout::service_unit(&agent.name)] {
+            r.check(
+                layout.units.join(&unit).is_file(),
+                format!("unit {unit} is installed"),
+                format!("unit {unit} is missing; run setup"),
+            );
+        }
+        let active = systemctl(&["is-active", &socket_unit]).unwrap_or_default();
+        r.check(
+            active == "active",
+            format!("{socket_unit} is active"),
+            format!("{socket_unit} is {active}; run `systemctl enable --now {socket_unit}`"),
+        );
+    } else {
+        r.warn("systemd is not running; make sure `sherpa-gate serve` runs as the service user");
+    }
+    let socket = layout.socket(&agent.name);
+    match fs::symlink_metadata(&socket) {
+        Ok(m) if std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()) => {
+            let mode = m.mode() & 0o777;
+            r.check(
+                m.uid() == service.uid.as_raw() && m.gid() == agent.gid.as_raw() && mode & !0o660 == 0,
+                format!("{} ({}:{} {:o})", socket.display(), m.uid(), m.gid(), mode),
+                format!(
+                    "{} has owner {}:{} mode {:o}; expected {}:{} and no more than 660",
+                    socket.display(),
+                    m.uid(),
+                    m.gid(),
+                    mode,
+                    service.uid,
+                    agent.gid
+                ),
+            );
+        }
+        Ok(_) => r.fail(format!("{} is not a socket", socket.display())),
+        Err(e) => r.fail(format!("{}: {e}", socket.display())),
+    }
+    if User::from_name("nobody")?.is_some() {
+        r.check(
+            !as_user_test("nobody", "-w", &socket),
+            "other users cannot connect to the agent's socket",
+            format!("user `nobody` CAN connect to {}", socket.display()),
+        );
+    }
 
     // The boundary, tested from the agent's side.
     for (path, what) in [
@@ -754,24 +915,23 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
             );
         }
     }
-    r.check(
-        !as_user_test(&agent.name, "-x", &layout.himalaya()),
-        "agent cannot execute the gate's himalaya binary",
-        "agent CAN execute the gate's himalaya binary",
-    );
-    for path in [
-        &layout.etc,
-        &layout.libexec,
-        &layout.config(),
-        &layout.gate(),
-        &layout.himalaya(),
+    for (bin, what) in [
+        (layout.himalaya(), "the gate's himalaya binary"),
+        (layout.gate(), "the gate"),
     ] {
+        r.check(
+            !as_user_test(&agent.name, "-x", &bin),
+            format!("agent cannot execute {what}"),
+            format!("agent CAN execute {what} ({})", bin.display()),
+        );
+    }
+    for path in [&layout.etc, &layout.libexec, &layout.config(), &layout.client] {
         if as_user_test(&agent.name, "-w", path) {
             r.fail(format!("agent CAN write {}", path.display()));
         }
     }
 
-    // sudo: the agent may run the gate as the service user, and nothing else.
+    // sudo: nothing needs it any more, and any rule is a possible way around the gate.
     match Command::new("sudo").args(["-l", "-U", &agent.name]).output() {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout);
@@ -782,35 +942,40 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
                 .map(str::trim)
                 .filter(|l| !l.is_empty())
                 .collect();
-            let gate = layout.gate().display().to_string();
-            let ours = rules
-                .iter()
-                .any(|l| l.contains(&gate) && l.contains(&format!("({})", service.name)));
-            r.check(
-                ours,
-                "sudo rule for the gate is active",
-                "sudo rule for the gate is missing",
-            );
-            for l in rules.iter().filter(|l| !l.contains(&gate)) {
-                r.fail(format!("agent has another sudo rule, which may bypass the gate: {l}"));
+            if rules.is_empty() {
+                r.ok("agent has no sudo rights");
+            }
+            for l in rules {
+                let dangerous = l.contains("(ALL")
+                    || l.contains("(root")
+                    || l.contains(&format!("({})", service.name))
+                    || l.contains(&format!("{})", service.name));
+                if dangerous {
+                    r.fail(format!(
+                        "agent can run commands as root or {}, which bypasses the gate: {l}",
+                        service.name
+                    ));
+                } else {
+                    r.warn(format!("agent has a sudo rule (the gate needs none): {l}"));
+                }
             }
         }
         Err(e) => r.warn(format!("cannot list sudo rules: {e}")),
     }
 
-    // End to end, as the agent.
+    // End to end, as the agent, through the client.
     let out = Command::new("runuser")
-        .args(["-u", &agent.name, "--", "sudo", "-n", "-u", &service.name])
-        .arg(layout.gate())
+        .args(["-u", &agent.name, "--"])
+        .arg(&layout.client)
         .args(["account", "list"])
         .output();
     match out {
-        Ok(o) if o.status.success() => r.ok("agent can reach the gate (`account list` works)"),
+        Ok(o) if o.status.success() => r.ok("agent can use the gate (`sherpa account list` works)"),
         Ok(o) => r.fail(format!(
             "agent cannot use the gate: {}",
             String::from_utf8_lossy(&o.stderr).trim()
         )),
-        Err(e) => r.fail(format!("cannot run the gate as the agent: {e}")),
+        Err(e) => r.fail(format!("cannot run the client as the agent: {e}")),
     }
 
     // Leftover credentials on the agent's side.
@@ -832,9 +997,9 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
         ));
     }
     let local = agent.dir.join(".local/bin/himalaya");
-    if local.exists() && !is_shim(&local) {
+    if local.exists() && !is_client(&local) {
         r.warn(format!(
-            "{} is a real himalaya binary; replace it with the shim (setup --shim)",
+            "{} is a real himalaya binary; replace it with a link to the client (setup --link)",
             local.display()
         ));
     }
@@ -1048,6 +1213,42 @@ smtp.password.command = "pass show work/smtp"
         assert!(!valid_secret_name("../x"));
         assert!(!valid_secret_name(".hidden"));
         assert!(!valid_secret_name("a/b"));
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    fn agent() -> User {
+        let mut u = User::from_uid(nix::unistd::getuid()).unwrap().unwrap();
+        u.name = "hermes".into();
+        u.uid = Uid::from_raw(1003);
+        u
+    }
+
+    #[test]
+    fn units_tie_the_socket_to_one_agent() {
+        let layout = Layout::default();
+        let socket = socket_unit(&layout, &agent(), "hermes", "sherpa");
+        assert!(socket.contains("ListenStream=/run/himalaya-sherpa/hermes.sock"));
+        assert!(socket.contains("Accept=yes") && socket.contains("SocketMode=0660"));
+        let service = service_unit(&layout, &agent(), "sherpa");
+        assert!(service.contains("serve --stdio --agent hermes --allow-uid 1003"));
+        assert!(service.contains("User=sherpa") && service.contains("NoNewPrivileges=yes"));
+        assert!(
+            service.contains("StandardOutput=journal"),
+            "stray output must not reach the socket"
+        );
+    }
+
+    #[test]
+    fn agent_names() {
+        assert!(valid_agent_name("hermes"));
+        assert!(valid_agent_name("agent-2"));
+        assert!(!valid_agent_name("../x"));
+        assert!(!valid_agent_name("Hermes"));
+        assert!(!valid_agent_name(""));
     }
 }
 

@@ -426,13 +426,13 @@ impl Config {
         Self::parse(&text)
     }
 
-    /// Path of the configuration to use. `SHERPA_CONFIG` is honoured only when not
-    /// running under sudo, so the agent can never point the gate at its own policy.
+    /// `$SHERPA_CONFIG`, or the installed policy. The gate's environment is set by its
+    /// service definition (systemd unit or container), never by the agent.
     pub fn default_path() -> PathBuf {
-        match (std::env::var_os("SUDO_USER"), std::env::var_os("SHERPA_CONFIG")) {
-            (None, Some(p)) => p.into(),
-            _ => DEFAULT_CONFIG_PATH.into(),
-        }
+        std::env::var_os("SHERPA_CONFIG")
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| DEFAULT_CONFIG_PATH.into())
     }
 
     /// Whether every recipient matches an `auto-send-to` pattern.

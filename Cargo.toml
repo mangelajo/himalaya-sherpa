@@ -17,10 +17,6 @@ name = "sherpa-gate"
 path = "src/bin/sherpa_gate.rs"
 
 [[bin]]
-name = "sherpa-client"
-path = "src/bin/sherpa_client.rs"
-
-[[bin]]
 name = "sherpa-admin"
 path = "src/bin/sherpa_admin.rs"
 
