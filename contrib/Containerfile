@@ -1,0 +1,28 @@
+# The himalaya-sherpa gate as a container: holds the mail credentials and serves one
+# agent on a Unix socket in a volume shared with the agent's container.
+#
+# Build the static binaries first (`make static himalaya`), then from the repository root:
+#   podman build -f contrib/Containerfile -t himalaya-sherpa-gate .
+# See contrib/compose.yaml for how to run it next to an agent.
+
+FROM docker.io/library/alpine:3
+
+RUN adduser -D -H -u 10001 -s /sbin/nologin sherpa \
+ && install -d -o sherpa -g sherpa -m 0700 /var/lib/himalaya-sherpa \
+ && install -d -o sherpa -g sherpa -m 0755 /run/himalaya-sherpa
+
+# Same paths as a host install, so the default policy works unchanged.
+COPY target/x86_64-unknown-linux-musl/release/sherpa-gate /usr/local/libexec/himalaya-sherpa/sherpa-gate
+COPY .cache/himalaya-2.1.0/himalaya /usr/local/libexec/himalaya-sherpa/himalaya
+COPY target/x86_64-unknown-linux-musl/release/sherpa-admin /usr/local/bin/sherpa-admin
+COPY etc/sherpa.toml /etc/himalaya-sherpa/sherpa.toml
+
+USER sherpa
+VOLUME ["/var/lib/himalaya-sherpa", "/run/himalaya-sherpa"]
+
+# Mount /etc/himalaya-sherpa/himalaya.toml (password.command = "cat /run/secrets/<name>")
+# and optionally your own sherpa.toml. The socket volume is the agent's only access, so
+# the socket is open to whoever can see it (mode 666).
+ENTRYPOINT ["/usr/local/libexec/himalaya-sherpa/sherpa-gate", "serve", \
+            "--socket", "/run/himalaya-sherpa/agent.sock", "--socket-mode", "666"]
+CMD ["--agent", "agent"]

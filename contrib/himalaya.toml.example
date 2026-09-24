@@ -1,0 +1,11 @@
+# himalaya configuration for the gate container. Passwords come from container secrets.
+[accounts.gmail]
+default = true
+email = "you@gmail.com"
+imap.server = "imaps://imap.gmail.com:993"
+imap.sasl.plain.username = "you@gmail.com"
+imap.sasl.plain.password.command = "cat /run/secrets/gmail"
+mailbox.alias.inbox = "INBOX"
+mailbox.alias.sent = "[Gmail]/Sent Mail"
+mailbox.alias.drafts = "[Gmail]/Drafts"
+mailbox.alias.trash = "[Gmail]/Trash"

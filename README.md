@@ -17,25 +17,40 @@ paths while leaving everyday email work (triage, reading, drafting replies) inta
 ## How it works
 
 ```
-agent (uid hermes) ── sherpa ─sudo─► sherpa gate (uid sherpa) ──► himalaya ──► IMAP/SMTP/...
-                                      │  /etc/himalaya-sherpa/sherpa.toml     (policy, root-owned)
-                                      │  /etc/himalaya-sherpa/himalaya.toml   (no plain passwords)
-                                      │  /etc/himalaya-sherpa/secrets/*       (root:sherpa 0640)
-                                      └► /var/lib/himalaya-sherpa             (outbox, audit log)
-you ── sudo sherpa-admin review / log / doctor
+agent (uid hermes)                          service user sherpa (systemd, or its own container)
+  himalaya ──► sherpa client ──unix socket──►  sherpa-gate ──► himalaya ──► IMAP / SMTP / JMAP
+   (no credentials, no sudo)  /run/himalaya-   │ /etc/himalaya-sherpa/sherpa.toml    policy
+                              sherpa/hermes.sock│ /etc/himalaya-sherpa/himalaya.toml  no plain passwords
+                                               │ /etc/himalaya-sherpa/secrets/*      root:sherpa 0640
+                                               └ /var/lib/himalaya-sherpa            outbox, audit log
+you ── sudo sherpa-admin review / policy / log / doctor
 ```
 
 A wrapper running as the agent's own user cannot protect a password: the agent could
 read the config, run the password command, swap the binary or read the process's
-memory. So the gate runs as a separate **service user**. The agent can run only the
-gate, through a single sudo rule. It cannot read the credentials, the himalaya config
-or the policy, and it cannot run the gate's himalaya binary directly.
+memory. So the gate runs as a separate **service user**, and the agent reaches it only
+through a Unix socket:
 
-The gate accepts a strict subset of the himalaya v2 command line. Everything else is
-rejected by the argument parser, including `-c`/`--config`, `--log-level`/`--log-file`,
-the raw `imap`/`smtp`/`gmail`/`jmap` commands, `account configure` and file-path
-arguments such as `--attach`. Every message the agent reads, replies to, forwards,
-flags, moves or deletes is first fetched and classified.
+- **The client holds nothing.** `sherpa` (installed as the agent's `himalaya`) forwards
+  the arguments and makes no decisions. It does the agent's file I/O with the agent's
+  own privileges: it reads the files named by `--attach` and saves downloaded attachments.
+- **The gate starts clean.** systemd owns the socket and starts a fresh, sandboxed gate
+  process for each connection (`Accept=yes`), in a fixed environment, so the agent
+  controls nothing about how the gate runs. The unit uses `NoNewPrivileges`,
+  `ProtectSystem=strict`, no capabilities and a syscall filter (`systemd-analyze
+  security` rates it 1.5/10).
+- **Each agent has its own socket**, `/run/himalaya-sherpa/<agent>.sock`, owned by the
+  service user and the agent's group, mode 0660. The gate also checks the kernel-verified
+  peer uid (`--allow-uid`), and records the peer uid and pid in the audit log.
+- **No sudo.** The agent needs no sudo rights at all; `doctor` fails if it can act as
+  root or as the service user.
+
+The gate accepts a strict subset of the himalaya v2 command line and re-parses every
+request itself. Everything else is rejected, including `-c`/`--config`,
+`--log-level`/`--log-file`, the raw `imap`/`smtp`/`gmail`/`jmap` commands and
+`account configure`. Every message the agent reads, replies to, forwards, flags, moves
+or deletes is first fetched and classified. If a decision cannot be written to the
+audit log, the agent gets nothing back.
 
 ## Install
 
@@ -45,26 +60,29 @@ write to, unless you pass `--allow-untrusted`.
 
 ```sh
 git clone https://github.com/<you>/himalaya-sherpa && cd himalaya-sherpa
-cargo build --release
+make release himalaya      # himalaya: the pinned, checksum-verified release
 
-# Get himalaya from a trusted source too (a release you verified, or your distribution).
 sudo target/release/sherpa-admin setup \
     --agent-user hermes \
-    --himalaya /usr/bin/himalaya \
+    --himalaya .cache/himalaya-2.1.0/himalaya \
     --import-config /home/hermes/.config/himalaya/config.toml \
-    --shim /home/hermes/.local/bin/himalaya     # optional: keep the agent's `himalaya` command
+    --link /home/hermes/.local/bin/himalaya     # optional: keep the agent's `himalaya` command
 ```
 
 `setup` prints each step (preview it with `--dry-run`). It:
 
 1. creates the `sherpa` system user;
-2. installs himalaya (`root:sherpa 0750`, so the agent can't run it) and the gate;
+2. installs `sherpa-gate` and himalaya for the service user only (`root:sherpa 0750`),
+   the client as `/usr/local/bin/sherpa`, and `sherpa-admin`;
 3. writes the default policy to `/etc/himalaya-sherpa/sherpa.toml`;
 4. imports your himalaya config and rewrites every `password.command` to read a secret
    file. It flags any other setting that runs a command (hooks and so on) for you to review;
 5. asks for each account password, or with `--import-secrets` runs the original
    password commands as the agent user one last time;
-6. installs a sudo rule (validated with `visudo`) and the `sherpa` command.
+6. installs the socket and service units for the agent and enables the socket;
+7. with `--link`, points the given paths at the client (created as the agent user).
+
+The client finds the agent's socket by user name. Set `SHERPA_SOCKET` to use another path.
 
 Then:
 
@@ -75,6 +93,41 @@ sudo sherpa-admin doctor --agent-user hermes   # checks the boundary from the ag
 Finally, **remove the agent's copy of the credentials** (its himalaya config and any
 `pass` entries it can decrypt), and **rotate the passwords**, since the agent could read
 them until now. `doctor` warns about leftovers it can see.
+
+## Containers
+
+The same socket works across containers. Tested with rootless podman under SELinux
+enforcing:
+
+- **Gate and agent in separate containers** (recommended): run the gate image, share
+  only the socket volume with the agent's container, and mount the static client there
+  as `himalaya`. See [`contrib/compose.yaml`](contrib/compose.yaml) and
+  [`contrib/Containerfile`](contrib/Containerfile) (`make image`). The gate container
+  runs read-only with no capabilities, and gets the password as a container secret.
+- **Agent sandbox containers, gate on the host** (for example Hermes with
+  `terminal.backend: docker`): mount the socket and a static client (`make static`)
+  into the sandbox:
+
+  ```yaml
+  terminal:
+    backend: docker
+    docker_volumes:
+      - "/run/himalaya-sherpa/hermes.sock:/run/himalaya-sherpa/agent.sock"
+      - "/path/to/static/sherpa:/usr/local/bin/himalaya:ro"
+    docker_env: { SHERPA_SOCKET: /run/himalaya-sherpa/agent.sock }
+  ```
+
+  On SELinux hosts, the default policy does not let a container process connect to a
+  service running outside containers. Run the gate as a container instead (above), or
+  give the sandbox a policy that allows the connection (for example with
+  [udica](https://github.com/containers/udica)).
+
+Across user namespaces the kernel reports the peer as uid 0, so `--allow-uid` does not
+apply there: the socket volume itself is the agent's access, which is why the image
+uses socket mode 666 inside a volume shared with one agent only.
+
+Containers also make it practical to close the other exfiltration paths: give the
+gate's network egress to your mail servers only, and the agent's to the model API only.
 
 ## What the agent sees
 
@@ -180,7 +233,7 @@ filter misses (or wrongly catches) a message, save it as `.eml`, look at it with
 
 - **Email is not the only way out.** If the agent has unrestricted network access, it
   can exfiltrate data with `curl`. Pair this with egress rules if that is in your
-  threat model.
+  threat model (see [Containers](#containers)).
 - Filters are regular expressions: good at the formulaic mail services send, not a
   guarantee. Messages that can't be parsed are withheld (fail closed).
 - Envelope listings are classified on sender, recipients and subject only. A message
@@ -189,6 +242,7 @@ filter misses (or wrongly catches) a message, save it as `.eml`, look at it with
 - `blackhole` mode deceives the agent by design. The agent may then tell you it sent
   something. Prefer `queue` or `draft`.
 - Targets the himalaya v2 CLI (tested with v2.1.0).
+- Socket paths are limited to 107 bytes by the kernel.
 
 ## Development
 
@@ -196,16 +250,23 @@ filter misses (or wrongly catches) a message, save it as `.eml`, look at it with
 make            # list the tasks
 make check      # formatting, clippy, docs and tests: run before pushing
 make test-e2e   # end-to-end tests against the pinned himalaya release (downloaded, checksum-verified)
+make static     # static binaries for containers (x86_64-unknown-linux-musl)
+make image      # the gate container image
 make ci         # everything CI runs, including cargo-deny
 ```
 
-The end-to-end tests drive the gate against a temporary Maildir account. They use
-`HIMALAYA_BIN`, the pinned release in `.cache/` (`make himalaya`), or a `himalaya` on
-`PATH`, and are skipped if none is found (CI sets `SHERPA_REQUIRE_HIMALAYA=1` to fail
-instead). The minimum supported Rust version is 1.88 (`make msrv`).
+The end-to-end tests start a real `sherpa-gate` on a temporary socket and drive it
+through the real client, against a temporary Maildir account. They use `HIMALAYA_BIN`,
+the pinned release in `.cache/` (`make himalaya`), or a `himalaya` on `PATH`, and are
+skipped if none is found (CI sets `SHERPA_REQUIRE_HIMALAYA=1` to fail instead). The
+minimum supported Rust version is 1.88 (`make msrv`).
 
-To try the gate without installing it, run `target/debug/sherpa` with
-`SHERPA_CONFIG=/path/to/sherpa.toml`. The variable is ignored under sudo.
+To try it without installing anything:
+
+```sh
+target/debug/sherpa-gate serve --agent me --socket /tmp/sherpa.sock --config my-sherpa.toml &
+SHERPA_SOCKET=/tmp/sherpa.sock target/debug/sherpa envelope list
+```
 
 ## License
 

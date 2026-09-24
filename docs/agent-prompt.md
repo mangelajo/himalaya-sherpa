@@ -10,6 +10,8 @@ You use email through the `himalaya` command, which is a policy gate (himalaya-s
 in front of the real mail client. Run `himalaya policy` to see the current rules.
 
 - You never have the account passwords, and you don't need them.
+- Attachments you download are saved in your current directory (or `--dir`); files you
+  `--attach` are read from your own filesystem.
 - When you send a message, it may be queued for the user's approval or saved to their
   drafts. That is the expected outcome, not an error: tell the user it is waiting for
   them, and do not send it again. `himalaya outbox list` shows its status.

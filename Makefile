@@ -19,7 +19,7 @@ HIMALAYA_PINNED := $(abspath $(HIMALAYA_DIR)/himalaya)
 USE_PINNED := if [ -z "$$HIMALAYA_BIN" ] && [ -x $(HIMALAYA_PINNED) ]; then export HIMALAYA_BIN=$(HIMALAYA_PINNED); fi;
 
 .DEFAULT_GOAL := help
-.PHONY: help build release test test-unit test-e2e msrv fmt fmt-check lint doc deny \
+.PHONY: help build release static image test test-unit test-e2e msrv fmt fmt-check lint doc deny \
         policy-check check ci himalaya clean
 
 help: ## Show this help
@@ -27,11 +27,21 @@ help: ## Show this help
 	     /^[a-zA-Z0-9_-]+:.*## / {printf "  %-13s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@printf "\nVariables: HIMALAYA_BIN=<path> to test against another himalaya binary.\n"
 
-build: ## Build debug binaries (target/debug/sherpa, sherpa-admin)
+build: ## Build debug binaries (sherpa client, sherpa-gate, sherpa-admin)
 	$(CARGO) build --locked
 
-release: ## Build release binaries (target/release/sherpa, sherpa-admin)
+release: ## Build release binaries in target/release
 	$(CARGO) build --release --locked
+
+STATIC_TARGET := x86_64-unknown-linux-musl
+CONTAINER ?= $(shell command -v podman || command -v docker)
+
+static: ## Build static binaries for containers (needs the musl target: rustup target add $(STATIC_TARGET))
+	$(CARGO) build --release --locked --target $(STATIC_TARGET)
+	@ls -l target/$(STATIC_TARGET)/release/sherpa target/$(STATIC_TARGET)/release/sherpa-gate
+
+image: static himalaya ## Build the gate container image (himalaya-sherpa-gate)
+	$(CONTAINER) build -f contrib/Containerfile -t himalaya-sherpa-gate .
 
 test: ## Run all tests (end-to-end tests need himalaya: see `make himalaya`)
 	@$(USE_PINNED) set -x; $(CARGO) test --locked

@@ -55,9 +55,26 @@ fn parse_mode(s: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("{s:?} is not an octal file mode"))
 }
 
+extern "C" fn exit_on_signal(_: nix::libc::c_int) {
+    // SAFETY: _exit is async-signal-safe.
+    unsafe { nix::libc::_exit(0) }
+}
+
+/// As PID 1 in a container, signals without a handler are ignored; exit on the usual
+/// stop signals instead of waiting to be killed.
+fn exit_on_stop_signals() {
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+    let action = SigAction::new(SigHandler::Handler(exit_on_signal), SaFlags::empty(), SigSet::empty());
+    for signal in [Signal::SIGTERM, Signal::SIGINT] {
+        // SAFETY: the handler only calls an async-signal-safe function.
+        let _ = unsafe { sigaction(signal, &action) };
+    }
+}
+
 fn main() -> ExitCode {
     // Everything the gate creates (outbox, staged attachments) is private.
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+    exit_on_stop_signals();
     let Cmd::Serve {
         agent,
         socket,

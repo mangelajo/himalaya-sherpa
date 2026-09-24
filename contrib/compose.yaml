@@ -1,0 +1,50 @@
+# Example: an agent and the himalaya-sherpa gate as two containers.
+#
+# The gate holds the credentials and is the only container that reaches the mail
+# servers. The agent gets the socket volume and the static client, nothing else.
+# Tested with rootless podman under SELinux enforcing (the two containers get
+# different SELinux categories; the shared volume is all they have in common).
+#
+#   make static himalaya
+#   podman build -f contrib/Containerfile -t himalaya-sherpa-gate .
+#   podman compose -f contrib/compose.yaml up        (or docker compose)
+
+services:
+  sherpa-gate:
+    image: himalaya-sherpa-gate
+    command: ["--agent", "hermes"]
+    volumes:
+      - sherpa-socket:/run/himalaya-sherpa
+      - sherpa-state:/var/lib/himalaya-sherpa        # outbox and audit log
+      - ./himalaya.toml:/etc/himalaya-sherpa/himalaya.toml:ro,Z
+      - ./sherpa.toml:/etc/himalaya-sherpa/sherpa.toml:ro,Z
+    secrets: [gmail]
+    networks: [mail]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  agent:
+    image: your-agent-image                          # e.g. Hermes
+    volumes:
+      - sherpa-socket:/run/himalaya-sherpa
+      - ../target/x86_64-unknown-linux-musl/release/sherpa:/usr/local/bin/himalaya:ro,z
+    environment:
+      SHERPA_SOCKET: /run/himalaya-sherpa/agent.sock
+    networks: [llm]
+
+secrets:
+  gmail:
+    file: ./secrets/gmail                            # the app password, one line
+
+volumes:
+  sherpa-socket: {}
+  sherpa-state: {}
+
+networks:
+  # Restrict each network's egress (firewall or proxy): `mail` to your IMAP/SMTP
+  # servers, `llm` to the model API. Then email is not the only exfiltration path
+  # that is closed.
+  mail: {}
+  llm: {}
