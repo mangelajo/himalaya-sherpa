@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use clap::{Parser, Subcommand, ValueEnum};
 use himalaya_sherpa::admin::{self, Layout, SetupOptions, Via};
-use chrono::NaiveDate;
 use himalaya_sherpa::config::Config;
 use himalaya_sherpa::scan::ScanOptions;
 
@@ -16,7 +16,11 @@ fn parse_date(s: &str) -> Result<NaiveDate, String> {
 }
 
 #[derive(Parser)]
-#[command(name = "sherpa-admin", version, about = "Set up and operate the himalaya-sherpa email gate.")]
+#[command(
+    name = "sherpa-admin",
+    version,
+    about = "Set up and operate the himalaya-sherpa email gate."
+)]
 struct Cli {
     /// Service user that holds the credentials and runs himalaya.
     #[arg(long, global = true, default_value = "sherpa")]
@@ -174,7 +178,15 @@ fn load() -> Result<Config> {
 fn run(cli: Cli) -> Result<bool> {
     let service = cli.service_user.as_str();
     match cli.command {
-        Cmd::Setup { agent_user, himalaya, import_config, import_secrets, shim, dry_run, allow_untrusted } => {
+        Cmd::Setup {
+            agent_user,
+            himalaya,
+            import_config,
+            import_secrets,
+            shim,
+            dry_run,
+            allow_untrusted,
+        } => {
             admin::setup(&SetupOptions {
                 agent_user,
                 service_user: service.into(),
@@ -240,10 +252,21 @@ fn run(cli: Cli) -> Result<bool> {
                     admin::policy_test(policy.as_ref().unwrap_or(&installed), &files)?;
                     Ok(true)
                 }
-                PolicyCmd::Scan { policy, compare, account, mailboxes, since, until, days, limit, jobs, all, json } => {
-                    let since = since.or_else(|| {
-                        days.map(|d| chrono::Local::now().date_naive() - chrono::Days::new(d.into()))
-                    });
+                PolicyCmd::Scan {
+                    policy,
+                    compare,
+                    account,
+                    mailboxes,
+                    since,
+                    until,
+                    days,
+                    limit,
+                    jobs,
+                    all,
+                    json,
+                } => {
+                    let since =
+                        since.or_else(|| days.map(|d| chrono::Local::now().date_naive() - chrono::Days::new(d.into())));
                     admin::policy_scan(
                         service,
                         admin::ScanRequest {
@@ -251,7 +274,14 @@ fn run(cli: Cli) -> Result<bool> {
                             compare,
                             all,
                             json,
-                            options: ScanOptions { account, mailboxes, since, until, limit, jobs },
+                            options: ScanOptions {
+                                account,
+                                mailboxes,
+                                since,
+                                until,
+                                limit,
+                                jobs,
+                            },
                         },
                     )
                 }

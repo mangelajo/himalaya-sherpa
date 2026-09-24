@@ -60,9 +60,7 @@ impl Layout {
 }
 
 pub fn valid_secret_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    !name.is_empty() && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
 // ----- config import ------------------------------------------------------------
@@ -81,12 +79,17 @@ pub struct ImportedPassword {
 
 fn find_passwords(table: &mut dyn TableLike, path: &str, out: &mut Vec<(String, Option<String>, bool)>) {
     for (key, item) in table.iter_mut() {
-        let here = if path.is_empty() { key.get().to_string() } else { format!("{path}.{}", key.get()) };
+        let here = if path.is_empty() {
+            key.get().to_string()
+        } else {
+            format!("{path}.{}", key.get())
+        };
         let Some(sub) = item.as_table_like_mut() else { continue };
         if key.get() == "password" {
             let command = sub.get("command").and_then(|c| {
                 c.as_str().map(String::from).or_else(|| {
-                    c.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
+                    c.as_array()
+                        .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
                 })
             });
             out.push((here, command, true));
@@ -123,7 +126,9 @@ pub fn rewrite_passwords(text: &str, secrets_dir: &Path) -> Result<(String, Vec<
         if !valid_secret_name(&name) {
             bail!("account name {name:?} cannot be used as a secret file name");
         }
-        let Some(account) = account.as_table_like_mut() else { continue };
+        let Some(account) = account.as_table_like_mut() else {
+            continue;
+        };
         let mut found = Vec::new();
         find_passwords(account, "", &mut found);
         let mut distinct: Vec<Option<String>> = found.iter().map(|(_, c, _)| c.clone()).collect();
@@ -136,7 +141,12 @@ pub fn rewrite_passwords(text: &str, secrets_dir: &Path) -> Result<(String, Vec<
             };
             let path = secrets_dir.join(&secret);
             set_password(account, &key, &format!("cat {}", path.display()));
-            imported.push(ImportedPassword { account: name.clone(), key, command, secret });
+            imported.push(ImportedPassword {
+                account: name.clone(),
+                key,
+                command,
+                secret,
+            });
         }
     }
     Ok((doc.to_string(), imported))
@@ -194,7 +204,13 @@ impl Steps {
     }
 
     fn copy(&self, from: &Path, to: &Path, uid: Uid, gid: Gid, mode: u32) -> Result<()> {
-        self.say(format!("install {} -> {} ({}:{} {mode:o})", from.display(), to.display(), uid, gid));
+        self.say(format!(
+            "install {} -> {} ({}:{} {mode:o})",
+            from.display(),
+            to.display(),
+            uid,
+            gid
+        ));
         if self.dry {
             return Ok(());
         }
@@ -240,7 +256,9 @@ fn find_himalaya(agent: &User) -> Option<PathBuf> {
 }
 
 fn is_shim(path: &Path) -> bool {
-    fs::read(path).map(|d| d.starts_with(b"#!/bin/sh\n# himalaya-sherpa")).unwrap_or(false)
+    fs::read(path)
+        .map(|d| d.starts_with(b"#!/bin/sh\n# himalaya-sherpa"))
+        .unwrap_or(false)
 }
 
 fn shim_script(layout: &Layout, service_user: &str) -> String {
@@ -273,7 +291,12 @@ pub fn untrusted_reason(path: &Path, agent: &User) -> Option<String> {
             let world_writable = m.mode() & 0o002 != 0 && m.mode() & 0o1000 == 0;
             let group_writable = m.mode() & 0o020 != 0 && m.gid() == agent.gid.as_raw();
             if m.uid() == agent.uid.as_raw() || world_writable || group_writable {
-                return Some(format!("{} is writable by {} (via {})", real.display(), agent.name, p.display()));
+                return Some(format!(
+                    "{} is writable by {} (via {})",
+                    real.display(),
+                    agent.name,
+                    p.display()
+                ));
             }
         }
         cur = p.parent();
@@ -286,14 +309,23 @@ pub fn untrusted_reason(path: &Path, agent: &User) -> Option<String> {
 pub fn command_settings(text: &str) -> Result<Vec<String>> {
     fn walk(table: &dyn TableLike, path: &str, out: &mut Vec<String>) {
         for (key, item) in table.iter() {
-            let here = if path.is_empty() { key.to_string() } else { format!("{path}.{key}") };
+            let here = if path.is_empty() {
+                key.to_string()
+            } else {
+                format!("{path}.{key}")
+            };
             let k = key.to_ascii_lowercase();
             if k == "password" {
                 continue;
             }
             if let Some(sub) = item.as_table_like() {
                 walk(sub, &here, out);
-            } else if k == "command" || k == "cmd" || k.contains("hook") || k.ends_with("-command") || k.ends_with("-cmd") {
+            } else if k == "command"
+                || k == "cmd"
+                || k.contains("hook")
+                || k.ends_with("-command")
+                || k.ends_with("-cmd")
+            {
                 out.push(here);
             }
         }
@@ -352,7 +384,10 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
         bail!("the service user must differ from the agent user");
     }
 
-    println!("Setting up himalaya-sherpa (agent: {}, service user: {})", agent.name, opts.service_user);
+    println!(
+        "Setting up himalaya-sherpa (agent: {}, service user: {})",
+        agent.name, opts.service_user
+    );
 
     let himalaya = opts
         .himalaya
@@ -474,7 +509,10 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
     } else if layout.himalaya_config().exists() {
         println!("  - keeping existing {}", layout.himalaya_config().display());
     } else {
-        println!("  ! no himalaya configuration imported; write {} yourself", layout.himalaya_config().display());
+        println!(
+            "  ! no himalaya configuration imported; write {} yourself",
+            layout.himalaya_config().display()
+        );
     }
 
     // 6. Secrets.
@@ -489,16 +527,19 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
             missing.push(p.secret.clone());
             continue;
         }
-        if opts.import_secrets {
-            if let Some(cmd) = &p.command {
-                println!("  - importing secret `{}` by running its password command as {}", p.secret, agent.name);
-                match fetch_secret_as(&agent.name, cmd) {
-                    Ok(s) => {
-                        write_secret(&layout, &service, &p.secret, &s)?;
-                        continue;
-                    }
-                    Err(e) => println!("    ! {e:#}"),
+        if opts.import_secrets
+            && let Some(cmd) = &p.command
+        {
+            println!(
+                "  - importing secret `{}` by running its password command as {}",
+                p.secret, agent.name
+            );
+            match fetch_secret_as(&agent.name, cmd) {
+                Ok(s) => {
+                    write_secret(&layout, &service, &p.secret, &s)?;
+                    continue;
                 }
+                Err(e) => println!("    ! {e:#}"),
             }
         }
         if std::io::stdin().is_terminal() {
@@ -514,11 +555,19 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
     // 7. sudo rule, validated before it is installed.
     let rule = sudoers_rule(&layout, &agent.name, &service.name);
     if opts.dry_run {
-        steps.say(format!("write {} (0440, validated with visudo):\n{rule}", layout.sudoers.display()));
+        steps.say(format!(
+            "write {} (0440, validated with visudo):\n{rule}",
+            layout.sudoers.display()
+        ));
     } else {
         let tmp = std::env::temp_dir().join(format!("himalaya-sherpa-sudoers.{}", std::process::id()));
         fs::write(&tmp, &rule)?;
-        let ok = Command::new("visudo").args(["-cqf"]).arg(&tmp).status().map(|s| s.success()).unwrap_or(false);
+        let ok = Command::new("visudo")
+            .args(["-cqf"])
+            .arg(&tmp)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         let _ = fs::remove_file(&tmp);
         if !ok {
             bail!("visudo rejected the generated sudoers rule:\n{rule}");
@@ -538,7 +587,10 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
         cmd.args(["-u", &agent.name, "--", "sh", "-c", script, "sh"]).arg(path);
         steps.say(format!("write {} as {} (0755)", path.display(), agent.name));
         if !opts.dry_run {
-            let mut child = cmd.stdin(std::process::Stdio::piped()).spawn().context("cannot run runuser")?;
+            let mut child = cmd
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .context("cannot run runuser")?;
             child.stdin.take().unwrap().write_all(shim.as_bytes())?;
             if !child.wait()?.success() {
                 bail!("cannot write {}", path.display());
@@ -548,16 +600,26 @@ pub fn setup(opts: &SetupOptions) -> Result<()> {
 
     println!("\nDone. Next steps:");
     for s in &missing {
-        println!("  * set the password: sudo {} secret set {s}", layout.admin_bin.display());
+        println!(
+            "  * set the password: sudo {} secret set {s}",
+            layout.admin_bin.display()
+        );
     }
-    println!("  * check the installation: sudo {} doctor --agent-user {}", layout.admin_bin.display(), agent.name);
-    println!("  * as {}, run `sherpa envelope list` (or the shim) to try it", agent.name);
+    println!(
+        "  * check the installation: sudo {} doctor --agent-user {}",
+        layout.admin_bin.display(),
+        agent.name
+    );
+    println!(
+        "  * as {}, run `sherpa envelope list` (or the shim) to try it",
+        agent.name
+    );
     println!("  * review the policy in {}", layout.config().display());
-    if import.is_some() {
+    if let Some(src) = &import {
         println!(
             "  * remove the agent's copy of the credentials: its himalaya config ({}) and any password-store \
              entries it can decrypt, then rotate the app passwords, since the agent could read them until now",
-            import.as_ref().unwrap().display()
+            src.display()
         );
     }
     Ok(())
@@ -632,12 +694,20 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
         return Ok(false);
     };
     let root = Uid::from_raw(0);
-    println!("Checking himalaya-sherpa for agent `{}` (service user `{}`)\n", agent.name, service.name);
+    println!(
+        "Checking himalaya-sherpa for agent `{}` (service user `{}`)\n",
+        agent.name, service.name
+    );
 
     // Policy.
     let cfg = match Config::load(&layout.config()) {
         Ok(c) => {
-            r.ok(format!("{} parses ({} filters, send mode {:?})", layout.config().display(), c.filters.len(), c.raw.send.mode));
+            r.ok(format!(
+                "{} parses ({} filters, send mode {:?})",
+                layout.config().display(),
+                c.filters.len(),
+                c.raw.send.mode
+            ));
             Some(c)
         }
         Err(e) => {
@@ -689,7 +759,13 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
         "agent cannot execute the gate's himalaya binary",
         "agent CAN execute the gate's himalaya binary",
     );
-    for path in [&layout.etc, &layout.libexec, &layout.config(), &layout.gate(), &layout.himalaya()] {
+    for path in [
+        &layout.etc,
+        &layout.libexec,
+        &layout.config(),
+        &layout.gate(),
+        &layout.himalaya(),
+    ] {
         if as_user_test(&agent.name, "-w", path) {
             r.fail(format!("agent CAN write {}", path.display()));
         }
@@ -707,8 +783,14 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
                 .filter(|l| !l.is_empty())
                 .collect();
             let gate = layout.gate().display().to_string();
-            let ours = rules.iter().any(|l| l.contains(&gate) && l.contains(&format!("({})", service.name)));
-            r.check(ours, "sudo rule for the gate is active", "sudo rule for the gate is missing");
+            let ours = rules
+                .iter()
+                .any(|l| l.contains(&gate) && l.contains(&format!("({})", service.name)));
+            r.check(
+                ours,
+                "sudo rule for the gate is active",
+                "sudo rule for the gate is missing",
+            );
             for l in rules.iter().filter(|l| !l.contains(&gate)) {
                 r.fail(format!("agent has another sudo rule, which may bypass the gate: {l}"));
             }
@@ -724,7 +806,10 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
         .output();
     match out {
         Ok(o) if o.status.success() => r.ok("agent can reach the gate (`account list` works)"),
-        Ok(o) => r.fail(format!("agent cannot use the gate: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(o) => r.fail(format!(
+            "agent cannot use the gate: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
         Err(e) => r.fail(format!("cannot run the gate as the agent: {e}")),
     }
 
@@ -748,12 +833,15 @@ pub fn doctor(agent_user: &str, service_user: &str) -> Result<bool> {
     }
     let local = agent.dir.join(".local/bin/himalaya");
     if local.exists() && !is_shim(&local) {
-        r.warn(format!("{} is a real himalaya binary; replace it with the shim (setup --shim)", local.display()));
+        r.warn(format!(
+            "{} is a real himalaya binary; replace it with the shim (setup --shim)",
+            local.display()
+        ));
     }
-    if let Some(cfg) = &cfg {
-        if cfg.raw.mailboxes.readable.is_empty() {
-            r.ok("filters apply to every mailbox (no mailbox allowlist)");
-        }
+    if let Some(cfg) = &cfg
+        && cfg.raw.mailboxes.readable.is_empty()
+    {
+        r.ok("filters apply to every mailbox (no mailbox allowlist)");
     }
 
     println!("\n{} failure(s), {} warning(s)", r.fails, r.warns);
@@ -785,16 +873,31 @@ pub fn review_list(cfg: &Config, all: bool) -> Result<()> {
                 e.id.clone(),
                 e.status.as_str().into(),
                 e.account.clone().unwrap_or_else(|| "(default)".into()),
-                e.to.iter().chain(&e.cc).chain(&e.bcc).cloned().collect::<Vec<_>>().join(", "),
+                e.to.iter()
+                    .chain(&e.cc)
+                    .chain(&e.bcc)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 e.subject.clone(),
             ]
         })
         .collect();
     if rows.is_empty() {
-        println!("{}", if all { "The outbox is empty." } else { "No messages waiting for approval." });
+        println!(
+            "{}",
+            if all {
+                "The outbox is empty."
+            } else {
+                "No messages waiting for approval."
+            }
+        );
         return Ok(());
     }
-    print!("{}", crate::render::table(&["ID", "STATUS", "ACCOUNT", "RECIPIENTS", "SUBJECT"], &rows, None));
+    print!(
+        "{}",
+        crate::render::table(&["ID", "STATUS", "ACCOUNT", "RECIPIENTS", "SUBJECT"], &rows, None)
+    );
     Ok(())
 }
 
@@ -820,10 +923,16 @@ pub fn review_approve(cfg: &Config, id: &str, via: Via) -> Result<()> {
     let outbox = Outbox::new(cfg.outbox_dir());
     let mut e = outbox.get(id)?;
     if !matches!(e.status, Status::Pending | Status::Denied) {
-        bail!("message {id} is {}; only pending or denied messages can be approved", e.status.as_str());
+        bail!(
+            "message {id} is {}; only pending or denied messages can be approved",
+            e.status.as_str()
+        );
     }
     let raw = outbox.raw(id)?;
-    let him = Himalaya { cfg, account: e.account.clone() };
+    let him = Himalaya {
+        cfg,
+        account: e.account.clone(),
+    };
     match via {
         Via::Send => {
             him.run_ok(false, &["message", "send"], Some(&raw)).map_err(|err| {
@@ -842,7 +951,13 @@ pub fn review_approve(cfg: &Config, id: &str, via: Via) -> Result<()> {
     e.updated = Some(outbox::now_rfc3339());
     e.note = Some(format!("approved by {}", reviewer()));
     outbox.save(&e)?;
-    crate::audit::record(cfg, e.account.as_deref(), "review approve", e.status.as_str(), serde_json::json!({ "outbox-id": id, "reviewer": reviewer() }));
+    crate::audit::record(
+        cfg,
+        e.account.as_deref(),
+        "review approve",
+        e.status.as_str(),
+        serde_json::json!({ "outbox-id": id, "reviewer": reviewer() }),
+    );
     Ok(())
 }
 
@@ -856,7 +971,13 @@ pub fn review_deny(cfg: &Config, id: &str, reason: Option<String>) -> Result<()>
     e.updated = Some(outbox::now_rfc3339());
     e.note = Some(reason.unwrap_or_else(|| "denied by the user".into()));
     outbox.save(&e)?;
-    crate::audit::record(cfg, e.account.as_deref(), "review deny", "denied", serde_json::json!({ "outbox-id": id, "reviewer": reviewer() }));
+    crate::audit::record(
+        cfg,
+        e.account.as_deref(),
+        "review deny",
+        "denied",
+        serde_json::json!({ "outbox-id": id, "reviewer": reviewer() }),
+    );
     println!("Denied {id}.");
     Ok(())
 }
@@ -899,13 +1020,21 @@ smtp.password.command = "pass show work/smtp"
 "#;
         let (out, found) = rewrite_passwords(src, Path::new("/etc/himalaya-sherpa/secrets")).unwrap();
         assert!(!out.contains("pass show"), "{out}");
-        assert!(out.contains(r#"imap.sasl.plain.password.command = "cat /etc/himalaya-sherpa/secrets/gmail""#), "{out}");
+        assert!(
+            out.contains(r#"imap.sasl.plain.password.command = "cat /etc/himalaya-sherpa/secrets/gmail""#),
+            "{out}"
+        );
         let secrets: Vec<&str> = found.iter().map(|p| p.secret.as_str()).collect();
         assert_eq!(secrets, ["gmail", "gmail", "work.imap", "work.smtp"]);
         assert_eq!(found[2].command.as_deref(), Some("pass show work/imap"));
         // Still a valid himalaya config.
         let parsed: toml::Table = toml::from_str(&out).unwrap();
-        assert!(parsed["accounts"]["work"]["imap"]["password"]["command"].as_str().unwrap().starts_with("cat "));
+        assert!(
+            parsed["accounts"]["work"]["imap"]["password"]["command"]
+                .as_str()
+                .unwrap()
+                .starts_with("cat ")
+        );
     }
 
     #[test]
@@ -932,7 +1061,14 @@ backend.cmd = "x"
 pgp.command = "gpg"
 "#;
         let found = command_settings(src).unwrap();
-        assert_eq!(found, ["accounts.a.message.send.pre-hook", "accounts.a.backend.cmd", "accounts.a.pgp.command"]);
+        assert_eq!(
+            found,
+            [
+                "accounts.a.message.send.pre-hook",
+                "accounts.a.backend.cmd",
+                "accounts.a.pgp.command"
+            ]
+        );
     }
 }
 
@@ -975,7 +1111,10 @@ pub fn policy_test(policy: &Path, files: &[PathBuf]) -> Result<()> {
         inputs.push(("<stdin>".into(), buf));
     }
     for f in files {
-        inputs.push((f.display().to_string(), fs::read(f).with_context(|| format!("cannot read {}", f.display()))?));
+        inputs.push((
+            f.display().to_string(),
+            fs::read(f).with_context(|| format!("cannot read {}", f.display()))?,
+        ));
     }
     for (name, raw) in inputs {
         let view = crate::policy::agent_view(&cfg, &raw, now);
@@ -985,7 +1124,14 @@ pub fn policy_test(policy: &Path, files: &[PathBuf]) -> Result<()> {
         };
         println!("== {name}");
         println!("read:    {}", action(&view.read));
-        println!("listing: {}", if view.listing_text.is_empty() { "hidden".into() } else { action(&view.listing) });
+        println!(
+            "listing: {}",
+            if view.listing_text.is_empty() {
+                "hidden".into()
+            } else {
+                action(&view.listing)
+            }
+        );
         if !view.read_text.is_empty() {
             println!("--- what the agent reads ---\n{}", view.read_text.trim_end());
         }
@@ -1003,7 +1149,11 @@ fn ask(prompt: &str) -> Result<String> {
 }
 
 fn show_diff(old: &Path, new: &Path) {
-    let status = Command::new("diff").args(["-u", "--label", "installed", "--label", "new"]).arg(old).arg(new).status();
+    let status = Command::new("diff")
+        .args(["-u", "--label", "installed", "--label", "new"])
+        .arg(old)
+        .arg(new)
+        .status();
     if status.is_err() {
         println!("(diff is not available)");
     }
@@ -1013,7 +1163,10 @@ fn show_diff(old: &Path, new: &Path) {
 fn install_policy_bytes(layout: &Layout, service_user: &str, data: &[u8]) -> Result<()> {
     let service = user(service_user)?;
     Steps { dry: false }.write(&layout.config(), data, Uid::from_raw(0), service.gid, 0o640)?;
-    println!("Installed {}. It applies to the next agent command.", layout.config().display());
+    println!(
+        "Installed {}. It applies to the next agent command.",
+        layout.config().display()
+    );
     Ok(())
 }
 
@@ -1118,7 +1271,11 @@ pub struct ScanRequest {
 }
 
 fn short(s: &str, n: usize) -> String {
-    if s.chars().count() > n { s.chars().take(n - 1).collect::<String>() + "…" } else { s.to_string() }
+    if s.chars().count() > n {
+        s.chars().take(n - 1).collect::<String>() + "…"
+    } else {
+        s.to_string()
+    }
 }
 
 /// Dry-run a policy against real mail. Reads the candidate before dropping to the
@@ -1167,12 +1324,19 @@ pub fn policy_scan(service_user: &str, req: ScanRequest) -> Result<bool> {
         .filter(|r| {
             req.all
                 || r.error.is_some()
-                || if req.compare { r.changed() } else { r.candidate.as_ref().is_some_and(|c| c.action.is_some()) }
+                || if req.compare {
+                    r.changed()
+                } else {
+                    r.candidate.as_ref().is_some_and(|c| c.action.is_some())
+                }
         })
         .collect();
 
     if req.json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "scanned": results.len(), "messages": shown }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "scanned": results.len(), "messages": shown }))?
+        );
         return Ok(true);
     }
 
@@ -1203,13 +1367,22 @@ pub fn policy_scan(service_user: &str, req: ScanRequest) -> Result<bool> {
         headers.push("MAILBOX");
     }
     headers.extend(["ID", "FROM", "SUBJECT"]);
-    headers.extend(if req.compare { ["INSTALLED", "CANDIDATE"] } else { ["RESULT", "LISTING"] });
+    headers.extend(if req.compare {
+        ["INSTALLED", "CANDIDATE"]
+    } else {
+        ["RESULT", "LISTING"]
+    });
     if !rows.is_empty() {
         print!("{}", crate::render::table(&headers, &rows, None));
         println!();
     }
 
-    let count = |a: Option<Action>| results.iter().filter(|r| r.candidate.as_ref().is_some_and(|c| c.action == a)).count();
+    let count = |a: Option<Action>| {
+        results
+            .iter()
+            .filter(|r| r.candidate.as_ref().is_some_and(|c| c.action == a))
+            .count()
+    };
     let errors = results.iter().filter(|r| r.error.is_some()).count();
     println!(
         "Scanned {} message(s){}: {} withheld, {} redacted, {} protected, {} allowed{}.",
@@ -1219,10 +1392,17 @@ pub fn policy_scan(service_user: &str, req: ScanRequest) -> Result<bool> {
         count(Some(Action::Redact)),
         count(Some(Action::Protect)),
         count(None),
-        if errors > 0 { format!(", {errors} could not be fetched") } else { String::new() }
+        if errors > 0 {
+            format!(", {errors} could not be fetched")
+        } else {
+            String::new()
+        }
     );
     if req.compare {
-        println!("{} message(s) would be treated differently by the candidate policy.", results.iter().filter(|r| r.changed()).count());
+        println!(
+            "{} message(s) would be treated differently by the candidate policy.",
+            results.iter().filter(|r| r.changed()).count()
+        );
     } else if !req.all {
         println!("Showing messages a filter matches; add --all to list every message.");
     }

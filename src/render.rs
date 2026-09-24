@@ -18,7 +18,12 @@ pub fn table(headers: &[&str], rows: &[Vec<String>], max_width: Option<usize>) -
     if let Some(max) = max_width {
         let sep = 3 * (n.saturating_sub(1));
         while widths.iter().sum::<usize>() + sep > max {
-            let (i, w) = widths.iter().enumerate().max_by_key(|(_, w)| **w).map(|(i, w)| (i, *w)).unwrap();
+            let (i, w) = widths
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, w)| **w)
+                .map(|(i, w)| (i, *w))
+                .unwrap();
             if w <= 4 {
                 break;
             }
@@ -76,7 +81,11 @@ fn flags(v: &Value) -> String {
     // himalaya reports flags as `{"raw": "\\Seen", "iana": "seen"}` (older versions: plain strings).
     let f: Vec<&str> = v
         .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().or_else(|| x["iana"].as_str())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().or_else(|| x["iana"].as_str()))
+                .collect()
+        })
         .unwrap_or_default();
     let mut s = String::new();
     if !f.contains(&"seen") {
@@ -101,18 +110,6 @@ fn date(v: &Value) -> String {
         .unwrap_or_else(|| v.as_str().unwrap_or_default().to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flags_accept_objects_and_strings() {
-        assert_eq!(flags(&json!([{ "raw": "\\Seen", "iana": "seen" }])), "");
-        assert_eq!(flags(&json!(["flagged"])), "*!");
-        assert_eq!(flags(&json!([])), "*");
-    }
-}
-
 /// Render himalaya's JSON envelope list as a table.
 pub fn envelopes(envs: &[Value], recipient: bool, max_width: Option<usize>) -> String {
     let who = if recipient { "TO" } else { "FROM" };
@@ -120,7 +117,10 @@ pub fn envelopes(envs: &[Value], recipient: bool, max_width: Option<usize>) -> S
         .iter()
         .map(|e| {
             vec![
-                e["id"].as_str().map(String::from).unwrap_or_else(|| e["id"].to_string()),
+                e["id"]
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| e["id"].to_string()),
                 flags(&e["flags"]),
                 e["subject"].as_str().unwrap_or_default().to_string(),
                 addrs(if recipient { &e["to"] } else { &e["from"] }),
@@ -151,7 +151,13 @@ fn addr_text(a: Option<&mail_parser::Address>) -> String {
 pub fn message(cfg: &Config, raw: &[u8], id: &str, verdict: &Verdict, as_json: bool) -> Option<String> {
     let msg = MessageParser::default().parse(raw)?;
     let redacting = verdict.is(classify::Action::Redact);
-    let clean = |s: &str| if redacting { classify::redact(cfg, s) } else { s.to_string() };
+    let clean = |s: &str| {
+        if redacting {
+            classify::redact(cfg, s)
+        } else {
+            s.to_string()
+        }
+    };
 
     let subject = clean(msg.subject().unwrap_or_default());
     let mut text = String::new();
@@ -213,7 +219,10 @@ pub fn message(cfg: &Config, raw: &[u8], id: &str, verdict: &Verdict, as_json: b
     out.push_str(text.trim_end());
     out.push('\n');
     if !attachments.is_empty() {
-        out.push_str(&format!("\nAttachments ({}), see `attachment list {id}`:\n", attachments.len()));
+        out.push_str(&format!(
+            "\nAttachments ({}), see `attachment list {id}`:\n",
+            attachments.len()
+        ));
         for a in &attachments {
             out.push_str(&format!(
                 "  - {} ({}, {} B)\n",
@@ -224,4 +233,16 @@ pub fn message(cfg: &Config, raw: &[u8], id: &str, verdict: &Verdict, as_json: b
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flags_accept_objects_and_strings() {
+        assert_eq!(flags(&json!([{ "raw": "\\Seen", "iana": "seen" }])), "");
+        assert_eq!(flags(&json!(["flagged"])), "*!");
+        assert_eq!(flags(&json!([])), "*");
+    }
 }

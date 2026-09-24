@@ -107,7 +107,10 @@ impl Verdict {
 
     /// Unparseable messages are withheld: the gate fails closed.
     pub fn unparseable() -> Self {
-        Self { action: Some(Action::Withhold), filters: vec!["unparseable".into()] }
+        Self {
+            action: Some(Action::Withhold),
+            filters: vec!["unparseable".into()],
+        }
     }
 
     pub fn filter_names(&self) -> String {
@@ -159,10 +162,10 @@ pub fn classify(cfg: &Config, facts: &Facts, now: i64) -> Verdict {
             continue;
         }
         let mut action = f.action;
-        if let (Some(hours), Some(date)) = (f.release_after_hours, facts.date) {
-            if now - date > hours as i64 * 3600 {
-                action = f.release_to;
-            }
+        if let (Some(hours), Some(date)) = (f.release_after_hours, facts.date)
+            && now - date > hours as i64 * 3600
+        {
+            action = f.release_to;
         }
         verdict.filters.push(f.name.clone());
         verdict.action = verdict.action.max(Some(action));
@@ -192,7 +195,11 @@ pub fn redact(cfg: &Config, text: &str) -> String {
                 let t = &c[0];
                 let digit = t.chars().any(|c| c.is_ascii_digit());
                 let alpha = t.chars().any(|c| c.is_ascii_alphabetic());
-                if digit && alpha { with.to_string() } else { t.to_string() }
+                if digit && alpha {
+                    with.to_string()
+                } else {
+                    t.to_string()
+                }
             })
             .into_owned();
     }
@@ -219,7 +226,15 @@ mod tests {
 
     #[test]
     fn otp_is_withheld() {
-        let v = classify_raw(&cfg(), &mail("no-reply@github.com", "[GitHub] Please verify your device", "Verification code: 482913"), NOW);
+        let v = classify_raw(
+            &cfg(),
+            &mail(
+                "no-reply@github.com",
+                "[GitHub] Please verify your device",
+                "Verification code: 482913",
+            ),
+            NOW,
+        );
         assert!(v.is(Action::Withhold), "{v:?}");
         let v = classify_raw(&cfg(), &mail("x@y.es", "Tu código de verificación", "Es 123456"), NOW);
         assert!(v.is(Action::Withhold), "{v:?}");
@@ -249,7 +264,11 @@ mod tests {
 
     #[test]
     fn security_alerts_are_protected() {
-        let v = classify_raw(&cfg(), &mail("no-reply@accounts.google.com", "Security alert", "New sign-in on Linux"), NOW);
+        let v = classify_raw(
+            &cfg(),
+            &mail("no-reply@accounts.google.com", "Security alert", "New sign-in on Linux"),
+            NOW,
+        );
         assert!(v.is(Action::Protect), "{v:?}");
     }
 
@@ -262,16 +281,29 @@ mod tests {
 
     #[test]
     fn listing_ignores_body_only_rules() {
-        let facts = Facts { subject: "Hello".into(), from: vec!["a@b.c".into()], ..Default::default() };
+        let facts = Facts {
+            subject: "Hello".into(),
+            from: vec!["a@b.c".into()],
+            ..Default::default()
+        };
         assert_eq!(classify(&cfg(), &facts, NOW).action, None);
-        let facts = Facts { subject: "Your verification code".into(), ..Default::default() };
+        let facts = Facts {
+            subject: "Your verification code".into(),
+            ..Default::default()
+        };
         assert!(classify(&cfg(), &facts, NOW).is(Action::Withhold));
     }
 
     #[test]
     fn redaction() {
-        let out = redact(&cfg(), "Code 482913 or 123 456, link https://x.io/r?t=abc and token A7K2QX9 but not the word Hello");
-        assert!(!out.contains("482913") && !out.contains("123 456") && !out.contains("x.io") && !out.contains("A7K2QX9"), "{out}");
+        let out = redact(
+            &cfg(),
+            "Code 482913 or 123 456, link https://x.io/r?t=abc and token A7K2QX9 but not the word Hello",
+        );
+        assert!(
+            !out.contains("482913") && !out.contains("123 456") && !out.contains("x.io") && !out.contains("A7K2QX9"),
+            "{out}"
+        );
         assert!(out.contains("Hello"));
     }
 }

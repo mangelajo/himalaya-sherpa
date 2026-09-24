@@ -44,11 +44,19 @@ pub struct Gate {
 
 impl Gate {
     pub fn new(cfg: Config, account: Option<String>, json: bool) -> Self {
-        Self { cfg, account, json, now: chrono::Utc::now().timestamp() }
+        Self {
+            cfg,
+            account,
+            json,
+            now: chrono::Utc::now().timestamp(),
+        }
     }
 
     fn him(&self) -> Himalaya<'_> {
-        Himalaya { cfg: &self.cfg, account: self.account.clone() }
+        Himalaya {
+            cfg: &self.cfg,
+            account: self.account.clone(),
+        }
     }
 
     fn outbox(&self) -> Outbox {
@@ -109,7 +117,10 @@ impl Gate {
         let list = &self.cfg.raw.mailboxes.readable;
         let mb = mailbox.unwrap_or("inbox");
         if !list.is_empty() && !Self::in_list(list, mb) {
-            return deny(format!("mailbox `{mb}` is not available to you (readable: {})", list.join(", ")));
+            return deny(format!(
+                "mailbox `{mb}` is not available to you (readable: {})",
+                list.join(", ")
+            ));
         }
         Ok(())
     }
@@ -117,7 +128,10 @@ impl Gate {
     fn check_writable(&self, mailbox: &str) -> Result<()> {
         let list = &self.cfg.raw.mailboxes.writable;
         if !list.is_empty() && !Self::in_list(list, mailbox) {
-            return deny(format!("you cannot add messages to mailbox `{mailbox}` (writable: {})", list.join(", ")));
+            return deny(format!(
+                "you cannot add messages to mailbox `{mailbox}` (writable: {})",
+                list.join(", ")
+            ));
         }
         Ok(())
     }
@@ -208,12 +222,14 @@ impl Gate {
         let out = self.him().run_ok(true, &args, None)?;
         let mut v: Value = serde_json::from_slice(&out).context("unexpected mailbox list output")?;
         let readable = &self.cfg.raw.mailboxes.readable;
-        if let Some(list) = v["mailboxes"].as_array_mut() {
-            if !readable.is_empty() {
-                list.retain(|m| {
-                    [&m["name"], &m["id"]].iter().any(|x| x.as_str().is_some_and(|s| Self::in_list(readable, s)))
-                });
-            }
+        if let Some(list) = v["mailboxes"].as_array_mut()
+            && !readable.is_empty()
+        {
+            list.retain(|m| {
+                [&m["name"], &m["id"]]
+                    .iter()
+                    .any(|x| x.as_str().is_some_and(|s| Self::in_list(readable, s)))
+            });
         }
         if self.json {
             return self.print(&v.to_string());
@@ -236,7 +252,11 @@ impl Gate {
                     .collect()
             })
             .unwrap_or_default();
-        let headers: &[&str] = if counts { &["NAME", "ID", "TOTAL", "UNREAD"] } else { &["NAME", "ID"] };
+        let headers: &[&str] = if counts {
+            &["NAME", "ID", "TOTAL", "UNREAD"]
+        } else {
+            &["NAME", "ID"]
+        };
         self.print(&render::table(headers, &rows, max_width))
     }
 
@@ -247,11 +267,16 @@ impl Gate {
             .filter(|(n, _)| allowed.is_empty() || allowed.contains(n))
             .collect();
         if self.json {
-            let list: Vec<Value> = accounts.iter().map(|(n, d)| json!({ "name": n, "default": d })).collect();
+            let list: Vec<Value> = accounts
+                .iter()
+                .map(|(n, d)| json!({ "name": n, "default": d }))
+                .collect();
             return self.print(&json!({ "accounts": list }).to_string());
         }
-        let rows: Vec<Vec<String>> =
-            accounts.iter().map(|(n, d)| vec![n.clone(), if *d { "yes".into() } else { String::new() }]).collect();
+        let rows: Vec<Vec<String>> = accounts
+            .iter()
+            .map(|(n, d)| vec![n.clone(), if *d { "yes".into() } else { String::new() }])
+            .collect();
         self.print(&render::table(&["NAME", "DEFAULT"], &rows, None))
     }
 
@@ -259,7 +284,11 @@ impl Gate {
 
     fn envelopes(&self, args: &ListArgs, query: Option<&[String]>) -> Result<i32> {
         self.check_readable(args.mailbox.as_deref())?;
-        let command = if query.is_some() { "envelope search" } else { "envelope list" };
+        let command = if query.is_some() {
+            "envelope search"
+        } else {
+            "envelope list"
+        };
         if let Some(q) = query {
             let body = Regex::new(r"(?i)(^|[^a-z])body([^a-z]|$)").unwrap();
             if !self.cfg.raw.search.allow_body && body.is_match(&q.join(" ")) {
@@ -269,7 +298,10 @@ impl Gate {
                 );
             }
         }
-        let mut hargs: Vec<String> = vec!["envelope".into(), if query.is_some() { "search" } else { "list" }.into()];
+        let mut hargs: Vec<String> = vec![
+            "envelope".into(),
+            if query.is_some() { "search" } else { "list" }.into(),
+        ];
         if let Some(m) = &args.mailbox {
             hargs.extend(["-m".into(), m.clone()]);
         }
@@ -282,11 +314,11 @@ impl Gate {
         if args.has_attachment {
             hargs.push("--has-attachment".into());
         }
-        if let Some(q) = query {
-            if !q.is_empty() {
-                hargs.push("--".into());
-                hargs.extend(q.iter().cloned());
-            }
+        if let Some(q) = query
+            && !q.is_empty()
+        {
+            hargs.push("--".into());
+            hargs.extend(q.iter().cloned());
         }
         let out = self.him().run_ok(true, &hargs, None)?;
         let mut v: Value = serde_json::from_slice(&out).context("unexpected envelope list output")?;
@@ -299,7 +331,12 @@ impl Gate {
         envs.retain_mut(|e| {
             let emails = |k: &str| -> Vec<String> {
                 e[k].as_array()
-                    .map(|a| a.iter().filter_map(|x| x["email"].as_str()).map(|s| s.to_lowercase()).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x["email"].as_str())
+                            .map(|s| s.to_lowercase())
+                            .collect()
+                    })
                     .unwrap_or_default()
             };
             let facts = Facts {
@@ -307,7 +344,10 @@ impl Gate {
                 to: emails("to"),
                 subject: e["subject"].as_str().unwrap_or_default().to_string(),
                 body: None,
-                date: e["date"].as_str().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| d.timestamp()),
+                date: e["date"]
+                    .as_str()
+                    .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+                    .map(|d| d.timestamp()),
             };
             let verdict = classify::classify(&self.cfg, &facts, self.now);
             match verdict.action {
@@ -325,7 +365,11 @@ impl Gate {
             }
             true
         });
-        self.audit(command, "allowed", json!({ "mailbox": args.mailbox, "withheld": withheld }));
+        self.audit(
+            command,
+            "allowed",
+            json!({ "mailbox": args.mailbox, "withheld": withheld }),
+        );
         if self.json {
             return self.print(&v.to_string());
         }
@@ -440,10 +484,10 @@ impl Gate {
                 ));
             }
         }
-        if let Some(save) = &c.save {
-            if !c.send {
-                self.check_writable(save)?;
-            }
+        if let Some(save) = &c.save
+            && !c.send
+        {
+            self.check_writable(save)?;
         }
 
         let mut args: Vec<String> = vec!["message".into(), kind.into()];
@@ -466,7 +510,15 @@ impl Gate {
         }
         if let Some(q) = quote {
             if let Some(p) = q.posting_style {
-                args.extend(["--posting-style".into(), if matches!(p, PostingStyle::Top) { "top" } else { "bottom" }.into()]);
+                args.extend([
+                    "--posting-style".into(),
+                    if matches!(p, PostingStyle::Top) {
+                        "top"
+                    } else {
+                        "bottom"
+                    }
+                    .into(),
+                ]);
             }
             if let Some(h) = &q.quote_headline {
                 args.extend(["--quote-headline".into(), h.clone()]);
@@ -488,7 +540,9 @@ impl Gate {
             return self.submit(mime, c.save.clone());
         }
         if let Some(save) = &c.save {
-            let out = self.him().run_ok(self.json, &["message", "add", "-m", save.as_str()], Some(&mime))?;
+            let out = self
+                .him()
+                .run_ok(self.json, &["message", "add", "-m", save.as_str()], Some(&mime))?;
             self.audit(&command, "saved", json!({ "mailbox": save }));
             return self.passthrough(&out);
         }
@@ -510,7 +564,11 @@ impl Gate {
         }
         args.extend(a.ids.iter().cloned());
         let out = self.him().run_ok(self.json, &args, None)?;
-        self.audit(&format!("message {what}"), "allowed", json!({ "from": a.from, "to": a.to, "ids": a.ids }));
+        self.audit(
+            &format!("message {what}"),
+            "allowed",
+            json!({ "from": a.from, "to": a.to, "ids": a.ids }),
+        );
         self.passthrough(&out)
     }
 
@@ -522,7 +580,8 @@ impl Gate {
             return deny("The message could not be parsed as RFC 5322.");
         };
         let list = |a: Option<&mail_parser::Address>| -> Vec<String> {
-            a.map(|a| a.iter().filter_map(|x| x.address()).map(|s| s.to_lowercase()).collect()).unwrap_or_default()
+            a.map(|a| a.iter().filter_map(|x| x.address()).map(|s| s.to_lowercase()).collect())
+                .unwrap_or_default()
         };
         let (to, cc, bcc) = (list(msg.to()), list(msg.cc()), list(msg.bcc()));
         let recipients: Vec<&String> = to.iter().chain(&cc).chain(&bcc).collect();
@@ -578,7 +637,10 @@ impl Gate {
                     log(&entry);
                     return self.passthrough(&out.stdout);
                 }
-                entry.note = Some(format!("automatic send failed: {}", himalaya::clean_stderr(&out.stderr)));
+                entry.note = Some(format!(
+                    "automatic send failed: {}",
+                    himalaya::clean_stderr(&out.stderr)
+                ));
             } else {
                 entry.note = Some("automatic send limit reached".into());
             }
@@ -611,7 +673,8 @@ impl Gate {
                 let mut marked = format!("X-Sherpa-Outbox-Id: {id}\r\n").into_bytes();
                 marked.extend_from_slice(&raw);
                 let drafts = send.drafts_mailbox.as_str();
-                self.him().run_ok(false, &["message", "add", "-m", drafts, "-f", "draft"], Some(&marked))?;
+                self.him()
+                    .run_ok(false, &["message", "add", "-m", drafts, "-f", "draft"], Some(&marked))?;
                 entry.status = Status::Drafted;
                 outbox.create(&entry, &raw)?;
                 log(&entry);
@@ -656,7 +719,11 @@ impl Gate {
         }
         args.extend(a.ids.iter().cloned());
         let out = self.him().run_ok(self.json, &args, None)?;
-        self.audit(&format!("flag {verb}"), "allowed", json!({ "mailbox": a.mailbox, "ids": a.ids }));
+        self.audit(
+            &format!("flag {verb}"),
+            "allowed",
+            json!({ "mailbox": a.mailbox, "ids": a.ids }),
+        );
         self.passthrough(&out)
     }
 
@@ -685,7 +752,17 @@ impl Gate {
             }
             AttachmentCmd::Download { .. } => {
                 let account = self.account.clone().unwrap_or_else(|| "default".into());
-                let safe = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect::<String>();
+                let safe = |s: &str| {
+                    s.chars()
+                        .map(|c| {
+                            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                                c
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect::<String>()
+                };
                 let dir = self.cfg.raw.attachments_dir.join(safe(&account)).join(format!(
                     "{}-{}",
                     chrono::Utc::now().format("%Y%m%d-%H%M%S"),
@@ -710,7 +787,11 @@ impl Gate {
             args.extend(attachment_ids.iter().cloned());
         }
         let out = self.him().run_ok(self.json, &args, None)?;
-        self.audit(&format!("attachment {}", args[1]), "allowed", json!({ "id": id, "mailbox": mailbox }));
+        self.audit(
+            &format!("attachment {}", args[1]),
+            "allowed",
+            json!({ "id": id, "mailbox": mailbox }),
+        );
         self.passthrough(&out)
     }
 
@@ -746,7 +827,12 @@ impl Gate {
                         vec![
                             e.id.clone(),
                             self.agent_status(e.status).into(),
-                            e.to.iter().chain(&e.cc).chain(&e.bcc).cloned().collect::<Vec<_>>().join(", "),
+                            e.to.iter()
+                                .chain(&e.cc)
+                                .chain(&e.bcc)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", "),
                             e.subject.clone(),
                         ]
                     })
@@ -784,12 +870,17 @@ impl Gate {
     fn policy(&self) -> Result<i32> {
         let raw = &self.cfg.raw;
         let sending = match raw.send.mode {
-            SendMode::Queue => "Messages you send are queued until the user approves them. A queued message is not an error; do not resend it.",
-            SendMode::Draft => "Messages you send are saved to the user's drafts; the user sends them. This is not an error; do not resend.",
+            SendMode::Queue => {
+                "Messages you send are queued until the user approves them. A queued message is not an error; do not resend it."
+            }
+            SendMode::Draft => {
+                "Messages you send are saved to the user's drafts; the user sends them. This is not an error; do not resend."
+            }
             SendMode::Deny => "Sending email is disabled. Tell the user what you would send instead.",
             SendMode::Blackhole => "Sending email is enabled.",
         };
-        let mut text = String::from("Email access is mediated by himalaya-sherpa. You never have the account credentials.\n\n");
+        let mut text =
+            String::from("Email access is mediated by himalaya-sherpa. You never have the account credentials.\n\n");
         text.push_str(&format!("Sending: {sending}\n"));
         if !raw.send.auto_send_to.is_empty() && raw.send.mode != SendMode::Blackhole {
             text.push_str(&format!(
@@ -809,16 +900,22 @@ impl Gate {
         }
         text.push_str(&format!(
             "\nBody search: {}\n",
-            if raw.search.allow_body { "allowed" } else { "disabled (search by from, to, subject, date, flag)" }
+            if raw.search.allow_body {
+                "allowed"
+            } else {
+                "disabled (search by from, to, subject, date, flag)"
+            }
         ));
         if !raw.mailboxes.readable.is_empty() {
             text.push_str(&format!("Readable mailboxes: {}\n", raw.mailboxes.readable.join(", ")));
         }
-        text.push_str(&format!("\nAttachments are downloaded under {}.\n", raw.attachments_dir.display()));
+        text.push_str(&format!(
+            "\nAttachments are downloaded under {}.\n",
+            raw.attachments_dir.display()
+        ));
         text.push_str(&format!("\n{DONT_WORK_AROUND_POLICY}\n"));
         self.print(&text)
     }
 }
 
-const DONT_WORK_AROUND_POLICY: &str =
-    "These rules protect the user's accounts. When a rule blocks you, say so to the user instead of looking for another way.";
+const DONT_WORK_AROUND_POLICY: &str = "These rules protect the user's accounts. When a rule blocks you, say so to the user instead of looking for another way.";

@@ -2,7 +2,7 @@
 name = "himalaya-sherpa"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Policy gate that lets AI agents use email through himalaya without holding credentials, sending unchecked, or reading one-time codes"
 license = "MIT"
 keywords = ["email", "himalaya", "agent", "sandbox", "security"]

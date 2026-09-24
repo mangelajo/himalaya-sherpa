@@ -63,7 +63,9 @@ pub fn now_rfc3339() -> String {
 
 pub fn new_id() -> String {
     let mut buf = [0u8; 2];
-    let rand = fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_ok();
+    let rand = fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .is_ok();
     let suffix = if rand {
         u16::from_be_bytes(buf)
     } else {
@@ -141,10 +143,10 @@ impl Outbox {
         };
         for item in dir {
             let path = item?.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                if let Ok(entry) = serde_json::from_slice::<Entry>(&fs::read(&path)?) {
-                    entries.push(entry);
-                }
+            if path.extension().is_some_and(|e| e == "json")
+                && let Ok(entry) = serde_json::from_slice::<Entry>(&fs::read(&path)?)
+            {
+                entries.push(entry);
             }
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -160,7 +162,9 @@ fn write_private(path: &Path, data: &[u8], create_new: bool) -> Result<()> {
     } else {
         opts.create(true).truncate(true);
     }
-    let mut f = opts.open(path).with_context(|| format!("cannot write {}", path.display()))?;
+    let mut f = opts
+        .open(path)
+        .with_context(|| format!("cannot write {}", path.display()))?;
     f.write_all(data)?;
     Ok(())
 }

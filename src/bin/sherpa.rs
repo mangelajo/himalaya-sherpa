@@ -13,8 +13,8 @@ fn main() -> ExitCode {
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o027));
     let cli = Cli::parse();
     let json = cli.json;
-    let result = Config::load(&Config::default_path())
-        .and_then(|cfg| Gate::new(cfg, cli.account, json).run(cli.command));
+    let result =
+        Config::load(&Config::default_path()).and_then(|cfg| Gate::new(cfg, cli.account, json).run(cli.command));
     match result {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {

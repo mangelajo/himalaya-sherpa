@@ -12,7 +12,12 @@ use crate::config::Config;
 pub fn caller() -> String {
     std::env::var("SUDO_USER")
         .ok()
-        .or_else(|| nix::unistd::User::from_uid(nix::unistd::getuid()).ok().flatten().map(|u| u.name))
+        .or_else(|| {
+            nix::unistd::User::from_uid(nix::unistd::getuid())
+                .ok()
+                .flatten()
+                .map(|u| u.name)
+        })
         .unwrap_or_else(|| "unknown".into())
 }
 

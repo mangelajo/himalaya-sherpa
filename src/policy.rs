@@ -122,7 +122,12 @@ pub fn agent_view(cfg: &Config, raw: &[u8], now: i64) -> AgentView {
         Some(Action::Withhold) => String::new(),
         _ => render::message(cfg, raw, "example", &read, false).unwrap_or_default(),
     };
-    AgentView { listing, read, listing_text, read_text }
+    AgentView {
+        listing,
+        read,
+        listing_text,
+        read_text,
+    }
 }
 
 pub fn check(cfg: &Config, now: i64) -> Report {
@@ -163,7 +168,11 @@ pub fn check(cfg: &Config, now: i64) -> Report {
         let got = view.read.action;
         let mut problems = Vec::new();
         if got != ex.expect.action() {
-            problems.push(format!("expected {}, got {}", describe(ex.expect.action()), describe(got)));
+            problems.push(format!(
+                "expected {}, got {}",
+                describe(ex.expect.action()),
+                describe(got)
+            ));
         }
         if let Some(expected) = &ex.expect_filters {
             let want: BTreeSet<&String> = expected.iter().collect();
@@ -185,7 +194,11 @@ pub fn check(cfg: &Config, now: i64) -> Report {
                 problems.push(format!("secret {secret:?} is visible when reading the message"));
             }
         }
-        let matched = if view.read.filters.is_empty() { String::new() } else { format!(" ({})", view.read.filter_names()) };
+        let matched = if view.read.filters.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", view.read.filter_names())
+        };
         if problems.is_empty() {
             let mut note = String::new();
             if got == Some(Action::Withhold) && view.listing.action != Some(Action::Withhold) {
@@ -210,7 +223,12 @@ pub fn check(cfg: &Config, now: i64) -> Report {
         } else {
             r.push(
                 Level::Fail,
-                format!("send example `{}`: expected {}, got {}", ex.name, ex.expect.as_str(), got.as_str()),
+                format!(
+                    "send example `{}`: expected {}, got {}",
+                    ex.name,
+                    ex.expect.as_str(),
+                    got.as_str()
+                ),
             );
         }
     }
@@ -221,17 +239,26 @@ pub fn check(cfg: &Config, now: i64) -> Report {
     }
     for f in &cfg.filters {
         if !raw.examples.is_empty() && !triggered.contains(&f.name) {
-            r.push(Level::Warn, format!("filter `{}` is not matched by any example", f.name));
+            r.push(
+                Level::Warn,
+                format!("filter `{}` is not matched by any example", f.name),
+            );
         }
     }
     if raw.send_examples.is_empty() {
         r.push(Level::Warn, "no [[send-example]]: the send policy is untested");
     }
     if raw.send.mode == crate::config::SendMode::Blackhole {
-        r.push(Level::Warn, "send mode `blackhole` tells the agent messages were sent when they were not");
+        r.push(
+            Level::Warn,
+            "send mode `blackhole` tells the agent messages were sent when they were not",
+        );
     }
     if raw.search.allow_body && cfg.filters.iter().any(|f| f.action == Action::Withhold) {
-        r.push(Level::Warn, "search.allow-body lets body searches probe the contents of withheld messages");
+        r.push(
+            Level::Warn,
+            "search.allow-body lets body searches probe the contents of withheld messages",
+        );
     }
     if raw.read.withheld == WithheldStyle::NotFound {
         r.push(Level::Ok, "withheld messages are reported as not found");
@@ -266,7 +293,8 @@ mod tests {
 
     #[test]
     fn wrong_expectation_fails() {
-        let r = with("[[example]]\nname = \"x\"\nsubject = \"Your login code\"\nbody = \"123456\"\nexpect = \"allow\"\n");
+        let r =
+            with("[[example]]\nname = \"x\"\nsubject = \"Your login code\"\nbody = \"123456\"\nexpect = \"allow\"\n");
         assert_eq!(r.failures(), 1, "{}", r.render());
         assert!(r.render().contains("expected allow, got withhold"));
     }
@@ -274,15 +302,21 @@ mod tests {
     #[test]
     fn leaked_secret_fails() {
         // Not matched by any filter, so the code is readable.
-        let r = with("[[example]]\nname = \"x\"\nsubject = \"Hi\"\nbody = \"use 4455\"\nexpect = \"allow\"\nsecrets = [\"4455\"]\n");
+        let r = with(
+            "[[example]]\nname = \"x\"\nsubject = \"Hi\"\nbody = \"use 4455\"\nexpect = \"allow\"\nsecrets = [\"4455\"]\n",
+        );
         assert!(r.render().contains("visible when reading"), "{}", r.render());
     }
 
     #[test]
     fn send_examples_follow_mode_and_auto_send() {
-        let cfg = Config::parse(&EXAMPLE_CONFIG.replace("auto-send-to = []", "auto-send-to = ['^me@example\\.com$']")).unwrap();
+        let cfg = Config::parse(&EXAMPLE_CONFIG.replace("auto-send-to = []", "auto-send-to = ['^me@example\\.com$']"))
+            .unwrap();
         assert_eq!(cfg.send_route(&["me@example.com"]), crate::config::SendRoute::AutoSend);
-        assert_eq!(cfg.send_route(&["me@example.com", "x@y.z"]), crate::config::SendRoute::Queue);
+        assert_eq!(
+            cfg.send_route(&["me@example.com", "x@y.z"]),
+            crate::config::SendRoute::Queue
+        );
         let r = with("[[send-example]]\nname = \"x\"\nto = [\"a@b.c\"]\nexpect = \"draft\"\n");
         assert!(r.render().contains("expected draft, got queue"), "{}", r.render());
     }

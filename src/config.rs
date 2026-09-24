@@ -324,9 +324,7 @@ impl Patterns {
             Patterns::Many(ps) => ps.iter().collect(),
         };
         list.into_iter()
-            .map(|p| {
-                Regex::new(p).with_context(|| format!("filter `{rule}`: invalid `{field}` regex {p:?}"))
-            })
+            .map(|p| Regex::new(p).with_context(|| format!("filter `{rule}`: invalid `{field}` regex {p:?}")))
             .collect()
     }
 }
@@ -419,7 +417,12 @@ impl Config {
             .iter()
             .map(|p| Regex::new(p).with_context(|| format!("invalid auto-send-to pattern {p:?}")))
             .collect::<Result<_>>()?;
-        Ok(Self { raw, filters, redact, auto_send_to })
+        Ok(Self {
+            raw,
+            filters,
+            redact,
+            auto_send_to,
+        })
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -441,7 +444,11 @@ impl Config {
     pub fn auto_send_matches<S: AsRef<str>>(&self, recipients: &[S]) -> bool {
         !self.auto_send_to.is_empty()
             && !recipients.is_empty()
-            && recipients.iter().all(|r| self.auto_send_to.iter().any(|re| re.is_match(&r.as_ref().to_lowercase())))
+            && recipients.iter().all(|r| {
+                self.auto_send_to
+                    .iter()
+                    .any(|re| re.is_match(&r.as_ref().to_lowercase()))
+            })
     }
 
     /// The route a message to `recipients` takes, ignoring the daily auto-send cap.

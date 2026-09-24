@@ -128,7 +128,11 @@ fn outcome(cfg: &Config, raw: &[u8], now: i64) -> Outcome {
             _ => "shown",
         }
     };
-    Outcome { action: view.read.action, filters: view.read.filters, listing }
+    Outcome {
+        action: view.read.action,
+        filters: view.read.filters,
+        listing,
+    }
 }
 
 /// Classify the selected messages with `candidate` (and `baseline`, if given).
@@ -140,9 +144,16 @@ pub fn scan(
     opts: &ScanOptions,
     progress: impl Fn(usize, usize) + Sync,
 ) -> Result<Vec<Scanned>> {
-    let him = Himalaya { cfg: access, account: opts.account.clone() };
+    let him = Himalaya {
+        cfg: access,
+        account: opts.account.clone(),
+    };
     let query = date_query(opts.since, opts.until);
-    let mailboxes = if opts.mailboxes.is_empty() { vec!["inbox".to_string()] } else { opts.mailboxes.clone() };
+    let mailboxes = if opts.mailboxes.is_empty() {
+        vec!["inbox".to_string()]
+    } else {
+        opts.mailboxes.clone()
+    };
     let mut todo: Vec<(String, Value)> = Vec::new();
     for mb in &mailboxes {
         for env in envelopes(&him, mb, &query, opts.limit)? {
@@ -157,14 +168,25 @@ pub fn scan(
     std::thread::scope(|s| {
         for _ in 0..opts.jobs.max(1) {
             s.spawn(|| {
-                let him = Himalaya { cfg: access, account: opts.account.clone() };
+                let him = Himalaya {
+                    cfg: access,
+                    account: opts.account.clone(),
+                };
                 loop {
                     let i = next.fetch_add(1, Ordering::SeqCst);
                     let Some((mb, env)) = todo.get(i) else { break };
-                    let id = env["id"].as_str().map(String::from).unwrap_or_else(|| env["id"].to_string());
+                    let id = env["id"]
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| env["id"].to_string());
                     let from = env["from"]
                         .as_array()
-                        .map(|a| a.iter().filter_map(|x| x["email"].as_str()).collect::<Vec<_>>().join(", "))
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x["email"].as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
                         .unwrap_or_default();
                     let mut item = Scanned {
                         mailbox: mb.clone(),

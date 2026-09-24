@@ -85,7 +85,11 @@ impl Himalaya<'_> {
             // A closed pipe just means himalaya did not need all of stdin.
             let _ = w.join();
         }
-        Ok(Output { code: out.status.code().unwrap_or(1), stdout: out.stdout, stderr: out.stderr })
+        Ok(Output {
+            code: out.status.code().unwrap_or(1),
+            stdout: out.stdout,
+            stderr: out.stderr,
+        })
     }
 
     /// Run and return stdout, or fail with himalaya's error.
@@ -96,7 +100,11 @@ impl Himalaya<'_> {
             if message.is_empty() {
                 message = String::from_utf8_lossy(&out.stdout).trim().to_string();
             }
-            return Err(Failed { code: out.code, message }.into());
+            return Err(Failed {
+                code: out.code,
+                message,
+            }
+            .into());
         }
         Ok(out.stdout)
     }
@@ -122,7 +130,12 @@ pub fn accounts(cfg: &Config) -> Result<Vec<(String, bool)>> {
     };
     Ok(accounts
         .iter()
-        .map(|(name, a)| (name.clone(), a.get("default").and_then(|d| d.as_bool()).unwrap_or(false)))
+        .map(|(name, a)| {
+            (
+                name.clone(),
+                a.get("default").and_then(|d| d.as_bool()).unwrap_or(false),
+            )
+        })
         .collect())
 }
 
