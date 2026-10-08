@@ -74,7 +74,7 @@ jobs:
           path: .cache
           key: himalaya-${{ hashFiles('Makefile') }}
       - run: make image CONTAINER=docker
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: himalaya-sherpa-x86_64-linux-musl
           path: |
